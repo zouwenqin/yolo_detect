@@ -6,8 +6,8 @@
 
 		<div class="login-box animate__animated animate__fadeIn">
 			<div class="title">
-				<h2>基于改进YOLOV8的学生课堂行为检测</h2>
-				<p>YOLOV8-CBAM-based student classroom behavior detection</p>
+				<h2>课堂行为检测与AI辅助干预系统</h2>
+				<p>Classroom behavior detection and AI-assisted intervention</p>
 			</div>
 
 			<el-form :model="ruleForm" :rules="registerRules" ref="ruleFormRef">

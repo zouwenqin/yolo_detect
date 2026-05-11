@@ -380,3 +380,38 @@ body,
 		padding-left: #{$i}px !important;
 	}
 }
+
+/* Demo routes use their own full-screen shell. Hide the admin frame while
+   switching between demo pages so the template chrome does not flash through. */
+body.demo-shell-active {
+	.layout-header,
+	.layout-aside,
+	.layout-columns-aside,
+	.layout-navbars-tagsview,
+	.layout-footer,
+	.el-backtop {
+		display: none !important;
+	}
+
+	.layout-container,
+	.layout-container-view,
+	.layout-main,
+	.layout-main-scroll,
+	.layout-parent {
+		width: 100vw !important;
+		height: 100vh !important;
+		min-height: 100vh !important;
+		margin: 0 !important;
+		padding: 0 !important;
+		overflow: hidden !important;
+	}
+
+	.el-scrollbar__wrap,
+	.el-scrollbar__view {
+		width: 100vw !important;
+		height: 100vh !important;
+		margin: 0 !important;
+		padding: 0 !important;
+		overflow: hidden !important;
+	}
+}

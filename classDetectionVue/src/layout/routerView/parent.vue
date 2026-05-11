@@ -39,9 +39,12 @@ const state = reactive<ParentViewState>({
 	iframeList: [],
 });
 
+const demoRoutePaths = ['/videoPredict', '/detectionResult', '/behaviorStats', '/aiIntervention', '/interventionReport', '/demoSettings'];
+const isDemoRoute = computed(() => demoRoutePaths.includes(route.path));
+
 // 设置主界面切换动画
 const setTransitionName = computed(() => {
-	return themeConfig.value.animation;
+	return isDemoRoute.value ? '' : themeConfig.value.animation;
 });
 // 获取组件缓存列表(name值)
 const getKeepAliveNames = computed(() => {
@@ -64,6 +67,7 @@ const getIframeListRoutes = async () => {
 // 页面加载前，处理缓存，页面刷新时路由缓存处理
 onBeforeMount(() => {
 	state.keepAliveNameList = keepAliveNames.value;
+	document.body.classList.toggle('demo-shell-active', isDemoRoute.value);
 	mittBus.on('onTagsViewRefreshRouterView', (fullPath: string) => {
 		state.keepAliveNameList = keepAliveNames.value.filter((name: string) => route.name !== name);
 		state.refreshRouterViewKey = '';
@@ -92,6 +96,7 @@ onMounted(() => {
 });
 // 页面卸载时
 onUnmounted(() => {
+	document.body.classList.remove('demo-shell-active');
 	mittBus.off('onTagsViewRefreshRouterView', () => {});
 });
 // 监听路由变化，防止 tagsView 多标签时，切换动画消失
@@ -100,6 +105,7 @@ watch(
 	() => route.fullPath,
 	() => {
 		state.refreshRouterViewKey = decodeURI(route.fullPath);
+		document.body.classList.toggle('demo-shell-active', isDemoRoute.value);
 	},
 	{
 		immediate: true,
