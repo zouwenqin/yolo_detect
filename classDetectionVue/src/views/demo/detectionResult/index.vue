@@ -76,15 +76,25 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
-import { behaviorText, currentEvent, demoState, riskTagType, riskText, setCurrentEvent } from '/@/views/demo/demoState';
+import { behaviorText, currentEvent, demoState, riskTagType, riskText, setCurrentEvent, syncWarningRecords } from '/@/views/demo/demoState';
+import request from '/@/utils/request';
 
 const router = useRouter();
 
 function handleRowClick(row: any) {
 	setCurrentEvent(row.eventId);
 }
+
+onMounted(() => {
+	request.get('/api/warningRecords/all').then((res) => {
+		if (res?.code === 0 && Array.isArray(res.data)) {
+			syncWarningRecords(res.data);
+		}
+	}).catch(() => {});
+});
 </script>
 
 <style scoped lang="scss">

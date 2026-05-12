@@ -181,6 +181,7 @@ import * as echarts from 'echarts';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
 import {
 	applyAdvice,
+	applyProtocolPayload,
 	behaviorText,
 	buildPrompt,
 	currentEvent,
@@ -400,6 +401,17 @@ function updatePieChart() {
 }
 
 socketService.on('message', (data: any) => {
+	if (data?.protocolVersion === 'classroom-demo-v1' || data?.behaviorStats) {
+		applyProtocolPayload(data);
+		updatePieChart();
+		if (data.completed) {
+			demoState.material.status = '检测完成';
+		} else if (data.warningState?.warning) {
+			demoState.material.status = '检测事件已生成';
+			ElMessage.warning(data.warningState.warning.reason || '检测事件已生成');
+		}
+		return;
+	}
 	if (data?.warningState?.warning) {
 		socketWarningToEvent(data.warningState.warning);
 		demoState.material.status = '检测事件已生成';

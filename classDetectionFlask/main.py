@@ -10,6 +10,7 @@ from flask import Flask, Response, request
 from predict import predictImg
 
 from flask_socketio import SocketIO, emit
+from detection_protocol import DetectionProtocolAdapter, normalize_behavior_label as protocol_normalize_behavior_label, behavior_name as protocol_behavior_name
 
 
 BEHAVIOR_LABELS = {
@@ -236,7 +237,12 @@ class VideoProcessingApp:
             (640, 480)
         )
         model = YOLO(f'./weights/{self.data["weight"]}')
-        warning_tracker = BehaviorWarningTracker(fps)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        protocol_adapter = DetectionProtocolAdapter(
+            fps=fps,
+            source_type="video",
+            source_name=os.path.basename(self.data.get("inputVideo") or "video")
+        )
 
         def generate():
             try:
@@ -251,24 +257,27 @@ class VideoProcessingApp:
                     _, jpeg = cv2.imencode('.jpg', processed_frame)
 
                     # ----------- 新增：提取标签并推送 -----------
-                    labels = []
-                    for box in results[0].boxes:
-                        cls_id = int(box.cls[0])
-                        label = results[0].names[cls_id]
-                        labels.append(label)
-                    warning_state = warning_tracker.update(labels)
-                    if warning_state.get("warning"):
+                    detections = self.build_detections(results[0])
+                    labels = [item["label"] for item in detections]
+                    current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                    progress = round(current_frame / total_frames * 100, 1) if total_frames else None
+                    protocol_payload = protocol_adapter.update(labels, detections=detections, progress=progress)
+                    warning = protocol_payload.get("warningState", {}).get("warning")
+                    if warning:
                         warning = self.enrich_and_save_warning(
-                            warning_state["warning"],
+                            warning,
                             detection_type="video",
                             video_source=self.data.get("inputVideo")
                         )
-                        warning_state["warning"] = warning
-                    self.socketio.emit('message', {'labels': labels, 'warningState': warning_state})
+                        protocol_payload["warningState"]["warning"] = warning
+                        if protocol_payload.get("events"):
+                            protocol_payload["events"][0] = warning
+                    self.socketio.emit('message', protocol_payload)
                     # -----------------------------------------
 
                     yield b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n'
             finally:
+                self.socketio.emit('message', protocol_adapter.complete())
                 self.cleanup_resources(cap, video_writer)
                 self.socketio.emit('message', {'data': '处理完成，正在保存！'})
                 for progress in self.convert_avi_to_mp4(self.paths['video_output']):
@@ -290,7 +299,11 @@ class VideoProcessingApp:
         })
         self.socketio.emit('message', {'data': '正在加载，请稍等！'})
         model = YOLO(f'./weights/{self.data["weight"]}')
-        warning_tracker = BehaviorWarningTracker(20)
+        protocol_adapter = DetectionProtocolAdapter(
+            fps=20,
+            source_type="camera",
+            source_name="camera"
+        )
         cap = cv2.VideoCapture(0)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -310,24 +323,25 @@ class VideoProcessingApp:
                     _, jpeg = cv2.imencode('.jpg', processed_frame)
 
                     # ----------- 新增：提取标签并推送 -----------
-                    labels = []
-                    for box in results[0].boxes:
-                        cls_id = int(box.cls[0])
-                        label = results[0].names[cls_id]
-                        labels.append(label)
-                    warning_state = warning_tracker.update(labels)
-                    if warning_state.get("warning"):
+                    detections = self.build_detections(results[0])
+                    labels = [item["label"] for item in detections]
+                    protocol_payload = protocol_adapter.update(labels, detections=detections)
+                    warning = protocol_payload.get("warningState", {}).get("warning")
+                    if warning:
                         warning = self.enrich_and_save_warning(
-                            warning_state["warning"],
+                            warning,
                             detection_type="camera",
                             video_source="camera"
                         )
-                        warning_state["warning"] = warning
-                    self.socketio.emit('message', {'labels': labels, 'warningState': warning_state})
+                        protocol_payload["warningState"]["warning"] = warning
+                        if protocol_payload.get("events"):
+                            protocol_payload["events"][0] = warning
+                    self.socketio.emit('message', protocol_payload)
                     # -----------------------------------------
 
                     yield b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n'
             finally:
+                self.socketio.emit('message', protocol_adapter.complete())
                 self.cleanup_resources(cap, video_writer)
                 self.socketio.emit('message', {'data': '处理完成，正在保存！'})
                 for progress in self.convert_avi_to_mp4(self.paths['camera_output']):
@@ -344,6 +358,27 @@ class VideoProcessingApp:
         """停止摄像头预测"""
         self.recording = False
         return json.dumps({"status": 200, "message": "预测成功", "code": 0})
+
+    def build_detections(self, yolo_result):
+        """Build standard detection items from one YOLO result."""
+        detections = []
+        for box in yolo_result.boxes:
+            cls_id = int(box.cls[0])
+            label = yolo_result.names[cls_id]
+            behavior_type = protocol_normalize_behavior_label(label)
+            confidence = float(box.conf[0]) if hasattr(box, "conf") and len(box.conf) else 0.0
+            try:
+                bbox = [round(float(value), 2) for value in box.xyxy[0].tolist()]
+            except Exception:
+                bbox = []
+            detections.append({
+                "label": label,
+                "behaviorType": behavior_type,
+                "behaviorName": protocol_behavior_name(behavior_type),
+                "confidence": round(confidence, 4),
+                "bbox": bbox,
+            })
+        return detections
 
     def enrich_and_save_warning(self, warning, detection_type, video_source):
         """生成教师建议并保存预警记录。"""
@@ -389,7 +424,7 @@ class VideoProcessingApp:
             )
             if response.status_code == 200:
                 result = response.json()
-                if result.get("code") == "0" and result.get("data"):
+                if str(result.get("code")) == "0" and result.get("data"):
                     return result.get("data")
         except Exception as e:
             print(f"生成干预建议失败: {str(e)}")

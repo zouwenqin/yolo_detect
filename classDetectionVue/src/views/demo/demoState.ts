@@ -53,6 +53,7 @@ export const riskLabelMap: Record<RiskLevel, string> = {
 };
 
 export const demoState = reactive({
+	hasLiveData: false,
 	material: {
 		sourceName: '课堂录制_实训课程_片段01.mp4',
 		resolution: '1920×1080',
@@ -230,6 +231,52 @@ export function updateStatsFromLabels(labels: string[]) {
 	});
 }
 
+export function applyProtocolPayload(payload: any) {
+	if (!payload || typeof payload !== 'object') return;
+	demoState.hasLiveData = true;
+	if (payload.sourceName) demoState.material.sourceName = payload.sourceName;
+	if (typeof payload.progress === 'number') demoState.material.progress = Math.round(payload.progress);
+
+	if (Array.isArray(payload.behaviorStats) && payload.behaviorStats.length) {
+		const nextStats = payload.behaviorStats
+			.filter((item: any) => ['lie_desk', 'sleep', 'head_down', 'phone', 'focus'].includes(item.behaviorType))
+			.map((item: any) => protocolStatToDemoStat(item));
+		if (nextStats.length) {
+			demoState.stats.splice(0, demoState.stats.length, ...nextStats);
+		}
+	}
+
+	const warning = payload.warningState?.warning;
+	if (warning) {
+		upsertEvent(protocolWarningToDemoEvent(warning, payload));
+	}
+	if (Array.isArray(payload.events)) {
+		payload.events.slice().reverse().forEach((event: any) => {
+			upsertEvent(protocolWarningToDemoEvent(event, payload));
+		});
+	}
+}
+
+export function syncWarningRecords(records: any[]) {
+	if (!Array.isArray(records) || !records.length) return;
+	records.slice(0, 20).reverse().forEach((record) => {
+		upsertEvent({
+			eventId: record.eventId || `WR-${record.id || record.triggerTime || demoState.events.length + 1}`,
+			sourceType: record.detectionType === 'image' ? 'image' : 'video',
+			sourceName: record.videoSource || record.sourceName || demoState.material.sourceName,
+			behaviorType: record.behaviorType || 'none',
+			riskLevel: record.riskLevel || 'normal',
+			durationText: record.durationText || formatMinuteSecond(Number(record.durationSeconds || 0)),
+			confidence: record.confidence ? `${Math.round(Number(record.confidence) * 100)}%` : '88.0%',
+			reason: record.reason || '后端检测事件记录',
+			advice: record.advice || fallbackAdvice(record),
+			status: record.status || '待跟进',
+			createdAt: record.triggerTime || record.createdAt || '',
+			provider: record.provider || demoState.provider,
+		});
+	});
+}
+
 export function normalizeBehavior(label: string) {
 	const raw = String(label || '').toLowerCase();
 	const map: Record<string, string> = {
@@ -257,6 +304,48 @@ export function normalizeBehavior(label: string) {
 		睡觉: 'sleep',
 	};
 	return map[raw] || map[label] || raw;
+}
+
+function protocolStatToDemoStat(item: any): DemoStat {
+	const key = item.behaviorType || 'none';
+	const durationSeconds = Number(item.durationSeconds || 0);
+	const ratio = Number(item.ratio || 0);
+	const confidence = Number(item.confidence || 0);
+	const toneMap: Record<string, string> = {
+		lie_desk: 'danger',
+		sleep: 'warm',
+		head_down: 'amber',
+		phone: 'purple',
+		focus: 'green',
+	};
+	return {
+		key,
+		label: item.behaviorName || behaviorText(key),
+		duration: item.durationText || formatMinuteSecond(durationSeconds),
+		ratio: `${ratio.toFixed ? ratio.toFixed(1) : ratio}%`,
+		count: Number(item.count || 0),
+		confidence: confidence >= 0.9 ? '高' : confidence >= 0.75 ? '中' : confidence > 0 ? '低' : '-',
+		tone: toneMap[key] || 'green',
+		value: Math.round(durationSeconds / 60),
+	};
+}
+
+function protocolWarningToDemoEvent(warning: any, payload: any): Partial<DemoEvent> {
+	const confidence = Number(warning.confidence || 0);
+	return {
+		eventId: warning.eventId || `EVT-${String(demoState.events.length + 1).padStart(3, '0')}`,
+		sourceType: warning.sourceType || payload.sourceType || 'video',
+		sourceName: warning.sourceName || payload.sourceName || demoState.material.sourceName,
+		behaviorType: warning.behaviorType || 'none',
+		riskLevel: warning.riskLevel || 'normal',
+		durationText: warning.durationText || formatMinuteSecond(Number(warning.durationSeconds || 0)),
+		confidence: confidence ? `${Math.round(confidence * 100)}%` : '88.0%',
+		reason: warning.reason || payload.warningState?.reason || '检测事件达到触发阈值',
+		advice: warning.advice || '',
+		status: warning.status || '待跟进',
+		createdAt: warning.triggerTime || payload.timestamp || '',
+		provider: warning.provider || demoState.provider,
+	};
 }
 
 export function formatMinuteSecond(seconds: number) {
