@@ -89,3 +89,6 @@ coverage/
 *.7z
 *.tar
 *.gz
+
+
+class/

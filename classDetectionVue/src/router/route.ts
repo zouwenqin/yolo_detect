@@ -93,6 +93,16 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
 				},
 			},
 			{
+				path: '/detectionHistory',
+				name: 'detectionHistory',
+				component: () => import('/@/views/demo/detectionHistory/index.vue'),
+				meta: {
+					...commonMeta,
+					title: '检测历史',
+					icon: 'iconfont icon-shipinjilu',
+				},
+			},
+			{
 				path: '/demoSettings',
 				name: 'demoSettings',
 				component: () => import('/@/views/demo/demoSettings/index.vue'),

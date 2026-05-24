@@ -1,143 +1,249 @@
 <template>
-	<DemoShell active="ai" title="AI辅助干预" status="建议可生成">
+	<DemoShell active="ai" title="定性与沟通助手" :status="selectedClue ? '建议可生成' : '等待检测结果'">
 		<div class="ai-page">
 			<section class="panel event-panel">
 				<div class="section-title">
 					<div>
-						<h3>检测事件摘要</h3>
-						<p>当前选中事件来自“检测结果”页，页面间保持联动。</p>
+						<h3>异常行为摘要</h3>
+						<p>围绕当前重点线索生成非诊断式沟通建议，帮助老师判断如何开口，而不是替代老师下结论。</p>
 					</div>
-					<el-select v-model="selectedEventId" style="width: 160px" @change="setCurrentEvent">
-						<el-option v-for="item in demoState.events" :key="item.eventId" :label="item.eventId" :value="item.eventId" />
+					<el-select v-model="selectedEventId" style="width: 190px" :disabled="!topFocusClues.length" @change="setCurrentEvent">
+						<el-option v-for="item in topFocusClues" :key="item.clueId" :label="`${behaviorText(item.behaviorType)} · ${item.durationText}`" :value="item.eventId" />
 					</el-select>
 				</div>
 
-				<div class="event-summary" :class="currentEvent.riskLevel">
-					<div>
-						<span>事件编号</span>
-						<strong>{{ currentEvent.eventId }}</strong>
+				<template v-if="selectedClue">
+					<div class="event-summary" :class="selectedClue.riskLevel">
+						<div>
+							<span>重点线索</span>
+							<strong>{{ behaviorText(selectedClue.behaviorType) }}</strong>
+						</div>
+						<div>
+							<span>风险等级</span>
+							<strong>风险{{ riskText(selectedClue.riskLevel) }}</strong>
+						</div>
+						<div>
+							<span>最长持续</span>
+							<strong>{{ selectedClue.durationText }}</strong>
+						</div>
+						<div>
+							<span>同类记录</span>
+							<strong>{{ selectedClue.eventCount }} 条</strong>
+						</div>
 					</div>
-					<div>
-						<span>异常行为</span>
-						<strong>{{ behaviorText(currentEvent.behaviorType) }}</strong>
+					<div class="reason-box">
+						<h3>证据依据</h3>
+						<p>{{ selectedClue.evidenceText }}</p>
 					</div>
-					<div>
-						<span>风险等级</span>
-						<strong>风险{{ riskText(currentEvent.riskLevel) }}</strong>
-					</div>
-					<div>
-						<span>持续时长</span>
-						<strong>{{ currentEvent.durationText }}</strong>
-					</div>
-				</div>
-
-				<div class="reason-box">
-					<h3>触发依据</h3>
-					<p>{{ currentEvent.reason }}</p>
-				</div>
+				</template>
+				<el-empty v-else description="请先完成视频检测，AI 助手会基于真实异常线索生成建议">
+					<el-button type="primary" @click="router.push('/videoPredict')">去视频检测</el-button>
+				</el-empty>
 			</section>
 
-			<section class="panel prompt-panel">
+			<section class="panel judgement-panel">
 				<div class="section-title compact">
-					<h3>Prompt 构建预览</h3>
-					<p>不使用学生姓名，以检测事件和课堂场景为输入。</p>
+					<h3>可能原因研判</h3>
+					<p>仅提供沟通方向，所有原因都需要教师课后与学生确认。</p>
 				</div>
-				<el-input v-model="promptText" type="textarea" :rows="8" resize="none" />
-				<div class="model-row">
-					<span>模型选择</span>
-					<el-radio-group v-model="demoState.provider">
-						<el-radio-button label="qwen">阿里千问</el-radio-button>
-						<el-radio-button label="kimi">Kimi</el-radio-button>
-					</el-radio-group>
-					<el-button type="primary" :loading="loading" @click="generateAdvice">生成沟通建议</el-button>
+				<div class="reason-grid">
+					<div v-for="item in reasonCards" :key="item.title">
+						<strong>{{ item.title }}</strong>
+						<p>{{ item.desc }}</p>
+					</div>
 				</div>
 			</section>
 
 			<section class="panel advice-panel">
 				<div class="section-title compact">
-					<h3>建议生成结果</h3>
-					<p>建议内容定位为教师沟通辅助，不作为心理诊断。</p>
+					<h3>沟通建议</h3>
+					<p>MiniMax 会结合行为、持续时长和触发原因生成教师沟通话术。</p>
 				</div>
 				<div class="advice-card">
 					<el-icon><ChatDotRound /></el-icon>
-					<p>{{ currentEvent.advice }}</p>
+					<p>{{ selectedClue?.advice || '点击生成后，将给出开场话术、追问方向和后续跟进建议。' }}</p>
+				</div>
+				<div class="guidance-grid">
+					<div>
+						<span>建议开场</span>
+						<strong>先关心身体状态和课堂压力</strong>
+					</div>
+					<div>
+						<span>避免说法</span>
+						<strong>避免当众点名或贴标签</strong>
+					</div>
+					<div>
+						<span>追问方向</span>
+						<strong>睡眠、课程难度、近期情绪</strong>
+					</div>
+					<div>
+						<span>人工跟进</span>
+						<strong>高风险或反复出现时建议复核</strong>
+					</div>
 				</div>
 				<div class="action-row">
-					<el-button type="primary" @click="router.push('/interventionReport')">同步到报告</el-button>
-					<el-button @click="copyAdvice">复制建议</el-button>
+					<el-button type="primary" :loading="loading" :disabled="!selectedClue" @click="generateAdvice">生成沟通建议</el-button>
+					<el-button :disabled="!selectedClue?.advice" @click="copyAdvice">复制建议</el-button>
+					<el-button :disabled="!selectedClue" @click="router.push('/interventionReport')">同步到跟进记录</el-button>
+				</div>
+				<div class="chat-box">
+					<div class="section-title compact">
+						<h3>连续追问</h3>
+						<p>可继续询问“学生否认怎么办”“是否需要联系辅导员”“怎么避免伤害学生自尊”。</p>
+					</div>
+					<div class="chat-list">
+						<div v-if="!chatMessages.length" class="chat-empty">围绕当前线索继续提问，系统会带上检测证据和前文对话。</div>
+						<div v-for="(message, index) in chatMessages" :key="index" class="chat-message" :class="message.role">
+							{{ message.content }}
+						</div>
+					</div>
+					<div class="chat-input-row">
+						<el-input v-model="chatInput" :disabled="!selectedClue" placeholder="输入追问内容" @keyup.enter="askFollowUp" />
+						<el-button type="primary" :loading="chatLoading" :disabled="!selectedClue" @click="askFollowUp">发送</el-button>
+					</div>
 				</div>
 			</section>
-
-			<aside class="panel history-panel">
-				<div class="section-title compact">
-					<h3>生成历史</h3>
-					<p>最近生成的AI辅助干预建议。</p>
-				</div>
-				<div class="history-list">
-					<button v-for="item in demoState.aiHistory" :key="item.eventId" @click="setCurrentEvent(item.eventId)">
-						<span>{{ item.eventId }} · {{ behaviorText(item.behaviorType) }}</span>
-						<em>{{ item.provider === 'kimi' ? 'Kimi' : '阿里千问' }} · 风险{{ riskText(item.riskLevel) }}</em>
-					</button>
-				</div>
-			</aside>
 		</div>
 	</DemoShell>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { ChatDotRound } from '@element-plus/icons-vue';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
-import { applyAdvice, behaviorText, buildPrompt, currentEvent, demoState, fallbackAdvice, riskText, setCurrentEvent } from '/@/views/demo/demoState';
+import { applyAdvice, behaviorText, buildPrompt, currentFocusClue, demoState, fallbackAdvice, parseDurationSeconds, riskText, setCurrentEvent, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
+import { normalizeAdviceResult } from '/@/utils/advice';
 import request from '/@/utils/request';
+
+type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
 const router = useRouter();
 const loading = ref(false);
-const selectedEventId = ref(currentEvent.value.eventId);
-const promptText = ref(buildPrompt(currentEvent.value));
+const chatLoading = ref(false);
+const chatInput = ref('');
+const selectedEventId = ref(currentFocusClue.value?.eventId || '');
+const chatMessages = ref<ChatMessage[]>([]);
 
-watch(currentEvent, (event) => {
-	selectedEventId.value = event.eventId;
-	promptText.value = buildPrompt(event);
+const selectedClue = computed(() => currentFocusClue.value);
+const reasonCards = computed(() => [
+	{ title: '疲劳或身体不适', desc: `${selectedClue.value ? behaviorText(selectedClue.value.behaviorType) : '异常行为'}可能与睡眠、身体状态有关，需温和确认。` },
+	{ title: '课程压力或任务受阻', desc: '可询问是否听懂课程、实训任务是否遇到困难，避免直接批评。' },
+	{ title: '情绪低落或近期困扰', desc: '仅作为沟通方向，不做诊断；若反复出现再建议辅导员或心理老师介入。' },
+	{ title: '临时分心因素', desc: '结合课堂位置、任务进度和同类记录频次，判断是否需要持续观察。' },
+]);
+
+watch(selectedClue, (clue) => {
+	selectedEventId.value = clue?.eventId || '';
+	chatMessages.value = [];
 }, { deep: true });
 
-const providerLabel = computed(() => demoState.provider === 'kimi' ? 'Kimi' : '阿里千问');
+function buildAdviceRequest(extra: Record<string, any> = {}) {
+	const clue = selectedClue.value;
+	if (!clue) return {};
+	return {
+		riskLevel: clue.riskLevel,
+		behaviorType: clue.behaviorType,
+		durationSeconds: clue.durationSeconds || parseDurationSeconds(clue.durationText),
+		durationText: clue.durationText,
+		reason: `${clue.reason} ${clue.evidenceText}`,
+		scene: buildPrompt(clue),
+		provider: demoState.provider,
+		...extra,
+	};
+}
 
 function generateAdvice() {
+	if (!selectedClue.value) return;
 	loading.value = true;
-	request.post('/api/warningRecords/advice', {
-		riskLevel: currentEvent.value.riskLevel,
-		behaviorType: currentEvent.value.behaviorType,
-		durationText: currentEvent.value.durationText,
-		reason: currentEvent.value.reason,
-		scene: promptText.value,
-		provider: demoState.provider,
-	}).then((res) => {
-		const advice = res?.code === 0 ? (res.data || fallbackAdvice(currentEvent.value)) : fallbackAdvice(currentEvent.value);
-		applyAdvice(advice, demoState.provider);
-		ElMessage.success(`${providerLabel.value} 建议已生成`);
+	request.post('/api/warningRecords/advice', buildAdviceRequest()).then((res) => {
+		const result = normalizeAdviceResult(res?.code == 0 ? res.data : null, fallbackAdvice(selectedClue.value!));
+		applyAdvice(result.advice, demoState.provider);
+		chatMessages.value = [{ role: 'assistant', content: result.advice }];
+		if (result.fallback) {
+			ElMessage.warning(result.message || 'MiniMax 暂未返回，已使用本地模板建议');
+		} else {
+			ElMessage.success(`MiniMax ${result.model || ''} 沟通建议已生成`.trim());
+		}
 	}).catch(() => {
-		applyAdvice(fallbackAdvice(currentEvent.value), demoState.provider);
+		const advice = fallbackAdvice(selectedClue.value!);
+		applyAdvice(advice, demoState.provider);
+		chatMessages.value = [{ role: 'assistant', content: advice }];
 		ElMessage.warning('AI接口暂不可用，已使用本地模板建议');
 	}).finally(() => {
 		loading.value = false;
 	});
 }
 
+function askFollowUp() {
+	const clue = selectedClue.value;
+	const question = chatInput.value.trim();
+	if (!clue || !question || chatLoading.value) return;
+	chatMessages.value.push({ role: 'user', content: question });
+	chatInput.value = '';
+	chatLoading.value = true;
+	request.post('/api/warningRecords/advice', buildAdviceRequest({
+		question,
+		messages: chatMessages.value.slice(0, -1),
+	})).then((res) => {
+		const result = normalizeAdviceResult(res?.code == 0 ? res.data : null, buildLocalFollowUpAnswer(clue, question));
+		chatMessages.value.push({ role: 'assistant', content: result.advice });
+		if (result.fallback) ElMessage.warning(result.message || 'MiniMax 暂未返回，已使用本地模板回复');
+	}).catch(() => {
+		chatMessages.value.push({ role: 'assistant', content: buildLocalFollowUpAnswer(clue, question) });
+		ElMessage.warning('AI接口暂不可用，已使用本地模板回复');
+	}).finally(() => {
+		chatLoading.value = false;
+	});
+}
+
+function buildLocalFollowUpAnswer(clue: any, question: string) {
+	const q = question.toLowerCase();
+	const behavior = behaviorText(clue.behaviorType);
+	if (q.includes('否认') || q.includes('不承认')) {
+		return `如果学生否认${behavior}相关情况，建议不要争辩检测结果。可以说“我不是想批评你，只是看到你这节课状态有点不一样，想确认你是否需要帮助”。先让学生解释当时情况，再根据反馈决定是否继续观察。`;
+	}
+	if (q.includes('辅导员') || q.includes('班主任') || q.includes('心理')) {
+		return `是否联系辅导员要看频次和影响程度。若${behavior}只是一次短暂出现，先由任课老师课后关心确认；如果多次出现、持续时间较长，或伴随明显回避交流、情绪低落，再建议同步班主任、辅导员或心理老师共同跟进。`;
+	}
+	if (q.includes('家长')) {
+		return `不建议一开始就直接联系家长。可以先与学生本人做低压力沟通，了解是否有睡眠、身体或学习压力问题；只有在风险持续、学生需要支持或学校流程要求时，再由班主任或辅导员按规范联系家长。`;
+	}
+	if (q.includes('自尊') || q.includes('伤害') || q.includes('尴尬')) {
+		return `避免伤害学生自尊的关键是私下、具体、非评价。不要说“你有问题”或“你是不是心理不好”，可以说“我注意到你今天有一段时间${behavior}，担心你是不是太累了”。把重点放在支持和确认需求上。`;
+	}
+	if (q.includes('开口') || q.includes('怎么说') || q.includes('话术')) {
+		return `可以这样开口：“今天课堂中我注意到你有一段时间状态比较低，我想确认一下是不是身体不舒服、没休息好，或者课程任务有点吃力？如果需要，我们可以一起想办法。”语气保持关心，不把检测结果当作质问。`;
+	}
+	return `针对“${question}”，建议围绕${behavior}线索做非诊断式沟通：先描述观察到的课堂状态，再询问学生是否需要帮助，最后根据学生反馈决定是继续观察、提供学习支持，还是同步班主任/辅导员复核。`;
+}
+
 function copyAdvice() {
-	navigator.clipboard?.writeText(currentEvent.value.advice);
+	if (!selectedClue.value?.advice) return;
+	navigator.clipboard?.writeText(selectedClue.value.advice);
 	ElMessage.success('建议文本已复制');
 }
+
+async function loadWarningRecords() {
+	try {
+		const res = await request.get('/api/warningRecords/all');
+		if (res?.code == 0 && Array.isArray(res.data)) {
+			syncWarningRecords(res.data);
+			if (topFocusClues.value.length && !selectedEventId.value) setCurrentEvent(topFocusClues.value[0].eventId);
+		}
+	} catch (error) {}
+}
+
+onMounted(loadWarningRecords);
 </script>
 
 <style scoped lang="scss">
 .ai-page {
 	height: 100%;
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) 360px;
-	grid-template-rows: auto auto minmax(0, 1fr);
+	grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+	grid-template-rows: auto minmax(0, 1fr);
 	gap: 16px;
 	overflow: hidden;
 }
@@ -150,9 +256,9 @@ function copyAdvice() {
 	padding: 16px;
 }
 
-.history-panel {
+.advice-panel {
+	grid-row: 1 / 3;
 	grid-column: 2;
-	grid-row: 1 / 4;
 	overflow-y: auto;
 }
 
@@ -179,14 +285,18 @@ function copyAdvice() {
 	line-height: 1.6;
 }
 
-.event-summary {
+.event-summary,
+.reason-grid,
+.guidance-grid {
 	display: grid;
-	grid-template-columns: repeat(4, 1fr);
+	grid-template-columns: repeat(2, minmax(0, 1fr));
 	gap: 12px;
 }
 
-.event-summary div {
-	padding: 16px;
+.event-summary div,
+.reason-grid div,
+.guidance-grid div {
+	padding: 14px;
 	border-radius: 8px;
 	background: #f7fbfa;
 	border: 1px solid #e2ece9;
@@ -202,58 +312,55 @@ function copyAdvice() {
 	border-color: #eee2c7;
 }
 
-.event-summary span {
+.event-summary span,
+.guidance-grid span {
 	display: block;
 	color: #7a8a8f;
 	font-size: 12px;
 }
 
-.event-summary strong {
+.event-summary strong,
+.guidance-grid strong {
 	display: block;
 	margin-top: 8px;
-	font-size: 20px;
+	font-size: 18px;
 }
 
-.reason-box {
+.reason-box,
+.advice-card,
+.chat-box {
 	margin-top: 14px;
+}
+
+.reason-box,
+.advice-card {
 	padding: 14px;
 	border-radius: 8px;
 	background: #fbfdfc;
 	border: 1px solid #e2ece9;
 }
 
-.reason-box h3 {
+.reason-box h3,
+.reason-grid strong {
 	margin: 0 0 8px;
 	font-size: 16px;
 }
 
 .reason-box p,
-.advice-card p {
+.reason-grid p,
+.advice-card p,
+.chat-empty {
 	margin: 0;
 	color: #53666b;
 	line-height: 1.8;
-}
-
-.model-row {
-	display: flex;
-	align-items: center;
-	gap: 16px;
-	margin-top: 14px;
-}
-
-.model-row span {
-	color: #516166;
-	font-weight: 700;
 }
 
 .advice-card {
 	display: grid;
 	grid-template-columns: 34px minmax(0, 1fr);
 	gap: 12px;
-	padding: 18px;
-	border-radius: 8px;
 	background: #f1fbf8;
-	border: 1px solid #cdebe4;
+	border-color: #cdebe4;
 }
 
 .advice-card .el-icon {
@@ -262,46 +369,53 @@ function copyAdvice() {
 	font-size: 24px;
 }
 
+.guidance-grid {
+	margin-top: 12px;
+}
+
 .action-row {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 10px;
 	margin-top: 14px;
 }
 
-.history-list {
+.chat-box {
+	padding-top: 16px;
+	border-top: 1px solid #e5eeeb;
+}
+
+.chat-list {
 	display: grid;
 	gap: 10px;
+	max-height: 260px;
+	overflow-y: auto;
+	padding-right: 2px;
 }
 
-.history-list button {
-	padding: 14px;
+.chat-message {
+	width: fit-content;
+	max-width: 86%;
+	padding: 10px 12px;
 	border-radius: 8px;
-	border: 1px solid #e2ece9;
-	background: #fbfdfc;
-	text-align: left;
-	cursor: pointer;
+	line-height: 1.65;
+	background: #f7fbfa;
+	color: #34464a;
+	border: 1px solid #e0e9e7;
 }
 
-.history-list button:hover {
+.chat-message.user {
+	justify-self: end;
+	background: #008f87;
+	color: #fff;
 	border-color: #008f87;
-	background: #f1fbf8;
 }
 
-.history-list span,
-.history-list em {
-	display: block;
-}
-
-.history-list span {
-	font-weight: 800;
-	color: #172327;
-}
-
-.history-list em {
-	margin-top: 8px;
-	color: #6b7b80;
-	font-style: normal;
-	font-size: 13px;
+.chat-input-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 10px;
+	margin-top: 12px;
 }
 
 @media (max-width: 1040px) {
@@ -312,14 +426,10 @@ function copyAdvice() {
 		overflow: visible;
 	}
 
-	.history-panel {
+	.advice-panel {
 		grid-column: auto;
 		grid-row: auto;
 		overflow: visible;
-	}
-
-	.event-summary {
-		grid-template-columns: repeat(2, 1fr);
 	}
 }
 </style>

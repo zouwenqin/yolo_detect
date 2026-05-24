@@ -1,74 +1,120 @@
 <template>
-	<DemoShell active="result" title="检测结果" status="检测完成">
+	<DemoShell active="result" title="课堂异常发现" :status="pageStatus">
 		<div class="result-page">
-			<section class="panel result-list">
+			<section class="panel overview-panel">
 				<div class="section-title">
 					<div>
-						<h3>检测事件列表</h3>
-						<p>基于录制视频素材生成的课堂行为事件，不绑定学生实名信息。</p>
+						<h3>本次检测概览</h3>
+						<p>系统把同一视频中的重复检测记录聚合成重点线索，帮助老师先看到最需要关注的课堂异常。</p>
 					</div>
-					<el-tag type="success">{{ demoState.events.length }} 条事件</el-tag>
+					<el-tag :type="clueCount ? 'success' : 'info'">{{ clueCount ? '已发现重点线索' : '等待检测结果' }}</el-tag>
 				</div>
-
-				<el-table :data="demoState.events" height="100%" highlight-current-row @row-click="handleRowClick">
-					<el-table-column prop="eventId" label="事件编号" width="110" />
-					<el-table-column label="检测来源" min-width="170">
-						<template #default="{ row }">{{ row.sourceName }}</template>
-					</el-table-column>
-					<el-table-column label="行为类型" width="130">
-						<template #default="{ row }">{{ behaviorText(row.behaviorType) }}</template>
-					</el-table-column>
-					<el-table-column label="风险等级" width="110">
-						<template #default="{ row }">
-							<el-tag :type="riskTagType(row.riskLevel)">风险{{ riskText(row.riskLevel) }}</el-tag>
-						</template>
-					</el-table-column>
-					<el-table-column prop="durationText" label="持续时长" width="120" />
-					<el-table-column prop="confidence" label="置信度" width="100" />
-					<el-table-column label="处理状态" width="110">
-						<template #default="{ row }">
-							<el-tag effect="plain">{{ row.status }}</el-tag>
-						</template>
-					</el-table-column>
-					<el-table-column prop="createdAt" label="生成时间" width="150" />
-				</el-table>
+				<div class="overview-grid">
+					<div>
+						<span>视频素材</span>
+						<strong>{{ demoState.material.sourceName }}</strong>
+					</div>
+					<div>
+						<span>异常线索</span>
+						<strong>{{ clueCount }}</strong>
+					</div>
+					<div>
+						<span>最高风险</span>
+						<strong>风险{{ riskText(maxRisk) }}</strong>
+					</div>
+					<div>
+						<span>重点行为</span>
+						<strong>{{ primaryClue ? behaviorText(primaryClue.behaviorType) : '待检测' }}</strong>
+					</div>
+				</div>
 			</section>
 
-			<aside class="panel detail-panel">
-				<div class="section-title compact">
+			<section class="panel clue-panel">
+				<div class="section-title">
 					<div>
-						<h3>事件详情</h3>
-						<p>{{ currentEvent.eventId }} · {{ demoState.material.sourceName }}</p>
+						<h3>重点异常线索</h3>
+						<p>只保留 Top 3 风险线索，按风险等级和持续时长排序，减少比赛展示时的重复信息。</p>
 					</div>
+					<el-button text @click="showRaw = !showRaw">{{ showRaw ? '收起原始记录' : '查看原始记录' }}</el-button>
 				</div>
-				<div class="preview-card">
-					<div class="thumbnail">
+
+				<el-alert v-if="loadError" :title="loadError" type="warning" :closable="false" show-icon class="result-alert" />
+
+				<div v-loading="loading" class="clue-list">
+					<button
+						v-for="item in topFocusClues"
+						:key="item.clueId"
+						class="clue-card"
+						:class="{ active: item.eventIds.includes(demoState.selectedEventId) }"
+						@click="handleClueClick(item.eventId)"
+					>
+						<div class="clue-head">
+							<strong>{{ behaviorText(item.behaviorType) }}</strong>
+							<el-tag :type="riskTagType(item.riskLevel)">风险{{ riskText(item.riskLevel) }}</el-tag>
+						</div>
+						<p>{{ item.evidenceText }}</p>
+						<div class="clue-meta">
+							<span>最长持续 {{ item.durationText }}</span>
+							<span>{{ item.eventCount }} 条同类记录</span>
+							<span>{{ item.confidence }}</span>
+						</div>
+					</button>
+					<el-empty v-if="!loading && !topFocusClues.length" description="请先完成录制视频检测，系统将自动筛选课堂异常线索">
+						<el-button type="primary" @click="router.push('/videoPredict')">去视频检测</el-button>
+					</el-empty>
+				</div>
+
+				<el-collapse-transition>
+					<div v-if="showRaw" class="raw-table">
+						<el-table :data="realEvents" height="220">
+							<el-table-column prop="eventId" label="事件编号" width="120" />
+							<el-table-column label="行为类型" width="130">
+								<template #default="{ row }">{{ behaviorText(row.behaviorType) }}</template>
+							</el-table-column>
+							<el-table-column label="风险等级" width="110">
+								<template #default="{ row }">风险{{ riskText(row.riskLevel) }}</template>
+							</el-table-column>
+							<el-table-column prop="durationText" label="持续时长" width="120" />
+							<el-table-column prop="reason" label="触发原因" min-width="260" />
+						</el-table>
+					</div>
+				</el-collapse-transition>
+			</section>
+
+			<aside class="panel evidence-panel">
+				<template v-if="selectedClue">
+					<div class="section-title compact">
+						<h3>行为证据卡片</h3>
+						<p>{{ selectedClue.timeRange }}</p>
+					</div>
+					<div class="evidence-visual">
 						<div class="board"></div>
 						<div v-for="item in 7" :key="item" class="head" :class="`h${item}`"></div>
-						<div class="outline">{{ behaviorText(currentEvent.behaviorType) }}</div>
+						<div class="outline">{{ behaviorText(selectedClue.behaviorType) }}</div>
 					</div>
-					<div class="risk-summary">
-						<el-tag :type="riskTagType(currentEvent.riskLevel)" size="large">风险{{ riskText(currentEvent.riskLevel) }}</el-tag>
-						<h2>{{ behaviorText(currentEvent.behaviorType) }} {{ currentEvent.durationText }}</h2>
-						<p>{{ currentEvent.reason }}</p>
+					<div class="evidence-summary">
+						<el-tag :type="riskTagType(selectedClue.riskLevel)" size="large">风险{{ riskText(selectedClue.riskLevel) }}</el-tag>
+						<h2>{{ behaviorText(selectedClue.behaviorType) }} · {{ selectedClue.durationText }}</h2>
+						<p>{{ selectedClue.reason }}</p>
 					</div>
-				</div>
-
-				<div class="info-grid">
-					<div><span>行为类型</span><strong>{{ behaviorText(currentEvent.behaviorType) }}</strong></div>
-					<div><span>持续时长</span><strong>{{ currentEvent.durationText }}</strong></div>
-					<div><span>置信度</span><strong>{{ currentEvent.confidence }}</strong></div>
-					<div><span>处理状态</span><strong>{{ currentEvent.status }}</strong></div>
-				</div>
-
-				<section class="advice-snippet">
-					<h3>AI建议摘要</h3>
-					<p>{{ currentEvent.advice }}</p>
-				</section>
-
-				<div class="action-row">
-					<el-button type="primary" @click="router.push('/aiIntervention')">生成干预建议</el-button>
-					<el-button @click="router.push('/interventionReport')">查看报告</el-button>
+					<div class="info-grid">
+						<div><span>同类记录</span><strong>{{ selectedClue.eventCount }} 条</strong></div>
+						<div><span>置信度</span><strong>{{ selectedClue.confidence }}</strong></div>
+						<div><span>处理状态</span><strong>{{ selectedClue.status }}</strong></div>
+						<div><span>数据来源</span><strong>算法检测 + 后端预警</strong></div>
+					</div>
+					<section class="teacher-note">
+						<h3>教师关注提示</h3>
+						<p>{{ selectedClue.teacherHint }}</p>
+						<p>该提示不是心理诊断，只用于提醒教师课后进行温和、私下的沟通确认。</p>
+					</section>
+					<div class="action-row">
+						<el-button type="primary" @click="router.push('/aiIntervention')">进入 AI 沟通助手</el-button>
+						<el-button @click="router.push('/interventionReport')">生成跟进记录</el-button>
+					</div>
+				</template>
+				<div v-else class="empty-detail">
+					<el-empty description="完成视频检测后将展示行为证据卡片" />
 				</div>
 			</aside>
 		</div>
@@ -76,32 +122,58 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { ElMessage } from 'element-plus';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
-import { behaviorText, currentEvent, demoState, riskTagType, riskText, setCurrentEvent, syncWarningRecords } from '/@/views/demo/demoState';
+import { behaviorText, currentFocusClue, demoState, focusClues, realEvents, riskTagType, riskText, setCurrentEvent, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
 import request from '/@/utils/request';
 
 const router = useRouter();
+const loading = ref(false);
+const loadError = ref('');
+const showRaw = ref(false);
 
-function handleRowClick(row: any) {
-	setCurrentEvent(row.eventId);
+const clueCount = computed(() => focusClues.value.length);
+const selectedClue = computed(() => currentFocusClue.value);
+const primaryClue = computed(() => topFocusClues.value[0]);
+const maxRisk = computed(() => primaryClue.value?.riskLevel || 'normal');
+const pageStatus = computed(() => loading.value ? '同步检测结果' : (clueCount.value ? '已生成线索' : '等待检测结果'));
+
+function handleClueClick(eventId: string) {
+	setCurrentEvent(eventId);
 }
 
-onMounted(() => {
-	request.get('/api/warningRecords/all').then((res) => {
-		if (res?.code === 0 && Array.isArray(res.data)) {
+async function loadWarningRecords() {
+	loading.value = true;
+	loadError.value = '';
+	try {
+		const res = await request.get('/api/warningRecords/all');
+		if (res?.code == 0 && Array.isArray(res.data)) {
 			syncWarningRecords(res.data);
+			if (topFocusClues.value.length && !topFocusClues.value.some((item) => item.eventIds.includes(demoState.selectedEventId))) {
+				setCurrentEvent(topFocusClues.value[0].eventId);
+			}
+			return;
 		}
-	}).catch(() => {});
-});
+		loadError.value = '后端暂未返回检测线索，请先完成一次视频检测。';
+	} catch (error) {
+		loadError.value = '检测线索同步失败，请确认 Spring Boot 后端服务已启动。';
+		ElMessage.warning(loadError.value);
+	} finally {
+		loading.value = false;
+	}
+}
+
+onMounted(loadWarningRecords);
 </script>
 
 <style scoped lang="scss">
 .result-page {
 	height: 100%;
 	display: grid;
-	grid-template-columns: minmax(620px, 1fr) 420px;
+	grid-template-columns: minmax(0, 1fr) 420px;
+	grid-template-rows: auto minmax(0, 1fr);
 	gap: 16px;
 	overflow: hidden;
 }
@@ -111,18 +183,17 @@ onMounted(() => {
 	background: rgba(255, 255, 255, .97);
 	border: 1px solid #dde8e5;
 	box-shadow: 0 14px 34px rgba(23, 42, 46, .07);
-}
-
-.result-list {
-	min-width: 0;
 	padding: 16px;
-	display: flex;
-	flex-direction: column;
-	overflow: hidden;
 }
 
-.detail-panel {
-	padding: 18px;
+.overview-panel,
+.clue-panel {
+	min-width: 0;
+}
+
+.evidence-panel {
+	grid-row: 1 / 3;
+	grid-column: 2;
 	overflow-y: auto;
 }
 
@@ -132,6 +203,10 @@ onMounted(() => {
 	justify-content: space-between;
 	gap: 16px;
 	margin-bottom: 14px;
+}
+
+.section-title.compact {
+	display: block;
 }
 
 .section-title h3 {
@@ -146,16 +221,96 @@ onMounted(() => {
 	font-size: 13px;
 }
 
-.preview-card {
-	border-radius: 8px;
-	border: 1px solid #e1ebe8;
-	background: #fbfdfc;
-	overflow: hidden;
+.overview-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 12px;
 }
 
-.thumbnail {
+.overview-grid div,
+.info-grid div {
+	padding: 14px;
+	border-radius: 8px;
+	border: 1px solid #e2ece9;
+	background: #f7fbfa;
+}
+
+.overview-grid span,
+.info-grid span {
+	display: block;
+	color: #7a8a8f;
+	font-size: 12px;
+}
+
+.overview-grid strong,
+.info-grid strong {
+	display: block;
+	margin-top: 8px;
+	font-size: 17px;
+}
+
+.clue-list {
+	display: grid;
+	gap: 12px;
+	min-height: 260px;
+}
+
+.clue-card {
+	width: 100%;
+	padding: 16px;
+	border-radius: 8px;
+	border: 1px solid #e2ece9;
+	background: #fbfdfc;
+	text-align: left;
+	cursor: pointer;
+}
+
+.clue-card.active,
+.clue-card:hover {
+	border-color: #008f87;
+	background: #f1fbf8;
+}
+
+.clue-head,
+.clue-meta,
+.action-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.clue-head {
+	justify-content: space-between;
+}
+
+.clue-head strong {
+	font-size: 18px;
+}
+
+.clue-card p,
+.teacher-note p,
+.evidence-summary p {
+	color: #53666b;
+	line-height: 1.75;
+	margin: 10px 0 0;
+}
+
+.clue-meta {
+	flex-wrap: wrap;
+	margin-top: 12px;
+	color: #6b7b80;
+	font-size: 13px;
+}
+
+.result-alert,
+.raw-table {
+	margin-bottom: 12px;
+}
+
+.evidence-visual {
 	position: relative;
 	height: 210px;
+	border-radius: 8px 8px 0 0;
 	background:
 		linear-gradient(#e6edea 0 32%, transparent 32%),
 		linear-gradient(#805d45 0 0);
@@ -201,75 +356,60 @@ onMounted(() => {
 	font-weight: 800;
 }
 
-.risk-summary {
-	padding: 16px;
+.evidence-summary {
+	padding: 16px 0 8px;
 }
 
-.risk-summary h2 {
+.evidence-summary h2 {
 	margin: 12px 0 8px;
 	font-size: 24px;
-}
-
-.risk-summary p,
-.advice-snippet p {
-	margin: 0;
-	color: #53666b;
-	line-height: 1.75;
 }
 
 .info-grid {
 	display: grid;
 	grid-template-columns: repeat(2, 1fr);
 	gap: 10px;
-	margin: 14px 0;
+	margin: 12px 0;
 }
 
-.info-grid div {
-	padding: 14px;
-	border-radius: 8px;
-	background: #f7fbfa;
-	border: 1px solid #e2ece9;
-}
-
-.info-grid span {
-	display: block;
-	color: #7a8a8f;
-	font-size: 12px;
-}
-
-.info-grid strong {
-	display: block;
-	margin-top: 8px;
-	font-size: 17px;
-}
-
-.advice-snippet {
+.teacher-note {
 	padding: 14px;
 	border-radius: 8px;
 	background: #f1fbf8;
 	border: 1px solid #cdebe4;
 }
 
-.advice-snippet h3 {
-	margin: 0 0 10px;
+.teacher-note h3 {
+	margin: 0;
 	font-size: 16px;
 }
 
+.empty-detail {
+	min-height: 480px;
+	display: grid;
+	place-items: center;
+}
+
 .action-row {
-	display: flex;
-	gap: 10px;
 	margin-top: 16px;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1040px) {
 	.result-page {
 		height: auto;
 		grid-template-columns: 1fr;
+		grid-template-rows: none;
 		overflow: visible;
 	}
 
-	.detail-panel {
+	.evidence-panel {
+		grid-row: auto;
+		grid-column: auto;
 		overflow: visible;
+	}
+
+	.overview-grid {
+		grid-template-columns: repeat(2, 1fr);
 	}
 }
 </style>

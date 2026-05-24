@@ -90,3 +90,48 @@ Flask 通过 Socket.IO 的 `message` 事件推送：
 4. 前端优先读取 Socket 真实数据；无数据时使用演示兜底数据。
 5. 触发 `warning` 后 Flask 调用 Spring Boot `/warningRecords/advice` 生成建议，再保存到 `/warningRecords`。
 6. 前端检测结果、行为统计、AI辅助干预、干预报告读取同一份事件状态。
+## 行为统计字段口径
+
+前端 `#/videoPredict` 的行为统计、趋势图和占比图使用以下协议口径：
+
+### `behaviorStats`
+
+`behaviorStats` 是从算法输出明细聚合后的行为统计数组，主要用于统计卡片和累计行为占比图。
+
+常见字段：
+
+- `behaviorType`：归一化后的行为类型，例如 `head_down`、`lie_desk`、`focus`、`other_action`。
+- `behaviorName`：页面展示名称。
+- `durationSeconds`：累计人次时长，单位为秒。多名学生目标同时出现同一行为时分别累计，因此可能大于视频自然时长。
+- `durationText`：`durationSeconds` 的中文展示文本。
+- `count`：合并后的连续行为片段数。合并键为 `trackId + behaviorType`，不是 `predictions.csv` 原始行数。
+- `ratio`：该行为累计人次时长在全部行为累计人次时长中的占比。
+- `confidence`：该行为相关预测窗口的平均置信度。
+
+### `predictionWindows`
+
+`predictionWindows` 是从 `predictions.csv` 解析得到的目标行为时间窗，主要用于人次时长趋势图。
+
+常见字段：
+
+- `trackId`：目标轨迹编号。
+- `behaviorType` / `behaviorName`：归一化后的行为类型和展示名称。
+- `startFrame` / `endFrame`：原始预测窗口帧号。
+- `startSecond` / `endSecond`：换算后的视频时间。
+- `durationSeconds`：该预测窗口持续时间。
+- `confidence`：该窗口识别置信度。
+
+趋势图展示前会按 `trackId + behaviorType` 合并重叠窗口，再按视频时间分桶累计每类行为的人次秒。这样可以避免 LSTM/BiLSTM 重叠滑窗导致同一目标同一行为被重复计时，同时保留多学生同时出现同类行为时的群体累计效果。
+
+### 与 `predictions.csv` 的对应关系
+
+`predictions.csv` 是逐目标滑窗预测明细，不直接等同于页面统计卡片。页面统计的生成链路为：
+
+```text
+predictions.csv
+  -> 读取 track_id / start_frame / end_frame / pred_label / confidence
+  -> 行为标签归一化
+  -> 按 trackId + behaviorType 合并重叠窗口
+  -> 生成 behaviorStats、predictionWindows、warning events
+  -> 前端展示统计卡片、趋势图、累计占比图和 AI 干预事件
+```

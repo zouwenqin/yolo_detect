@@ -5,11 +5,12 @@ import subprocess
 import cv2
 import requests
 from datetime import datetime
-from flask import Flask, Response, request
+from flask import Flask, Response, jsonify, request, send_file
 
 from predict import predictImg
 
 from flask_socketio import SocketIO, emit
+from class_pipeline import ClassPipelineTaskManager
 from detection_protocol import DetectionProtocolAdapter, normalize_behavior_label as protocol_normalize_behavior_label, behavior_name as protocol_behavior_name
 
 
@@ -127,6 +128,7 @@ class VideoProcessingApp:
             'camera_output': "./runs/video/camera_output.avi",
             'video_output': "./runs/video/camera_output.avi"
         }
+        self.class_pipeline = ClassPipelineTaskManager(self.socketio)
         self.recording = False  # 标志位，判断是否正在录制视频
 
     def setup_routes(self):
@@ -134,6 +136,18 @@ class VideoProcessingApp:
         self.app.add_url_rule('/file_names', 'file_names', self.file_names, methods=['GET'])
         self.app.add_url_rule('/predictImg', 'predictImg', self.predictImg, methods=['POST'])
         self.app.add_url_rule('/predictVideo', 'predictVideo', self.predictVideo)
+        self.app.add_url_rule('/class-models', 'classModels', self.class_models, methods=['GET'])
+        self.app.add_url_rule('/class-preprocessed', 'classPreprocessed', self.class_preprocessed, methods=['GET'])
+        self.app.add_url_rule('/class-preprocessed/<dataset>/input-video', 'classPreprocessedInputVideo', self.class_preprocessed_input_video, methods=['GET'])
+        self.app.add_url_rule('/class-preprocessed/<dataset>/result-video', 'classPreprocessedResultVideo', self.class_preprocessed_result_video, methods=['GET'])
+        self.app.add_url_rule('/sample-video', 'getSampleVideo', self.get_sample_video, methods=['GET'])
+        self.app.add_url_rule('/videoTasks', 'createVideoTask', self.create_video_task, methods=['POST'])
+        self.app.add_url_rule('/videoTasks/<task_id>', 'getVideoTask', self.get_video_task, methods=['GET'])
+        self.app.add_url_rule('/videoTasks/<task_id>/input-video', 'getVideoTaskInputVideo', self.get_video_task_input_video, methods=['GET'])
+        self.app.add_url_rule('/videoTasks/<task_id>/stats', 'getVideoTaskStats', self.get_video_task_stats, methods=['GET'])
+        self.app.add_url_rule('/videoTasks/<task_id>/predictions', 'getVideoTaskPredictions', self.get_video_task_predictions, methods=['GET'])
+        self.app.add_url_rule('/videoTasks/<task_id>/track-summary', 'getVideoTaskTrackSummary', self.get_video_task_track_summary, methods=['GET'])
+        self.app.add_url_rule('/videoTasks/<task_id>/result-video', 'getVideoTaskResultVideo', self.get_video_task_result_video, methods=['GET'])
         self.app.add_url_rule('/predictCamera', 'predictCamera', self.predictCamera)
         self.app.add_url_rule('/stopCamera', 'stopCamera', self.stopCamera, methods=['GET'])
 
@@ -155,6 +169,38 @@ class VideoProcessingApp:
         """模型列表接口"""
         weight_items = [{'value': name, 'label': name} for name in self.get_file_names("./weights")]
         return json.dumps({'weight_items': weight_items})
+
+    def class_models(self):
+        """List models from class/models for the new offline pipeline."""
+        try:
+            return jsonify({"code": 0, "message": "success", "data": self.class_pipeline.list_models()})
+        except Exception as e:
+            return jsonify({"code": -1, "message": str(e), "data": None}), 500
+
+    def class_preprocessed(self):
+        """List precomputed csv/video datasets under class/sample and class/runtime."""
+        try:
+            return jsonify({"code": 0, "message": "success", "data": self.class_pipeline.list_preprocessed()})
+        except Exception as e:
+            return jsonify({"code": -1, "message": str(e), "data": None}), 500
+
+    def class_preprocessed_input_video(self, dataset):
+        try:
+            result_path = self.class_pipeline.get_preprocessed_input_video_path(dataset)
+            if not result_path:
+                return jsonify({"code": -1, "message": "input video not found", "data": None}), 404
+            return send_file(str(result_path), mimetype="video/mp4", conditional=True)
+        except Exception as e:
+            return jsonify({"code": -1, "message": str(e), "data": None}), 404
+
+    def class_preprocessed_result_video(self, dataset):
+        try:
+            result_path = self.class_pipeline.get_preprocessed_result_video_path(dataset)
+            if not result_path:
+                return jsonify({"code": -1, "message": "result video not found", "data": None}), 404
+            return send_file(str(result_path), mimetype="video/mp4", conditional=True)
+        except Exception as e:
+            return jsonify({"code": -1, "message": str(e), "data": None}), 404
 
     '''
     输入：接收包含用户名、模型权重名、置信度、图片路径等信息的 JSON 数据。
@@ -210,6 +256,56 @@ class VideoProcessingApp:
     通过 WebSocket 推送转换进度。
     将最终视频上传并保存记录。
        '''
+
+    def create_video_task(self):
+        data = request.get_json(silent=True) or {}
+        try:
+            task = self.class_pipeline.start_task(data)
+            return jsonify({
+                "code": 0,
+                "message": "started",
+                "data": {
+                    "taskId": task["taskId"],
+                    "status": task["status"],
+                    "taskStatus": task["taskStatus"],
+                }
+            })
+        except Exception as e:
+            return jsonify({"code": -1, "message": str(e), "data": None}), 500
+
+    def get_video_task(self, task_id):
+        task = self.class_pipeline.get_task(task_id)
+        if not task:
+            return jsonify({"code": -1, "message": "task not found", "data": None}), 404
+        public_task = {key: value for key, value in task.items() if key not in {"pipelineLog", "visualizeLog", "ffmpegLog"}}
+        return jsonify({"code": 0, "message": "success", "data": public_task})
+
+    def get_sample_video(self):
+        result_path = self.class_pipeline.get_input_video_path()
+        if not result_path:
+            return jsonify({"code": -1, "message": "sample video not found", "data": None}), 404
+        return send_file(str(result_path), mimetype="video/mp4", conditional=True)
+
+    def get_video_task_input_video(self, task_id):
+        result_path = self.class_pipeline.get_input_video_path(task_id)
+        if not result_path:
+            return jsonify({"code": -1, "message": "input video not found", "data": None}), 404
+        return send_file(str(result_path), mimetype="video/mp4", conditional=True)
+
+    def get_video_task_stats(self, task_id):
+        return jsonify({"code": 0, "message": "success", "data": self.class_pipeline.stats(task_id)})
+
+    def get_video_task_predictions(self, task_id):
+        return jsonify({"code": 0, "message": "success", "data": self.class_pipeline.predictions(task_id)})
+
+    def get_video_task_track_summary(self, task_id):
+        return jsonify({"code": 0, "message": "success", "data": self.class_pipeline.track_summary(task_id)})
+
+    def get_video_task_result_video(self, task_id):
+        result_path = self.class_pipeline.get_result_video_path(task_id)
+        if not result_path:
+            return jsonify({"code": -1, "message": "result video not found", "data": None}), 404
+        return send_file(str(result_path), mimetype="video/mp4", conditional=True)
 
     def predictVideo(self):
         """视频流处理接口"""

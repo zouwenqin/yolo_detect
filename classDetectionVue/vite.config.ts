@@ -13,12 +13,13 @@ const alias: Record<string, string> = {
 };
 
 const viteConfig = defineConfig((mode: ConfigEnv) => {
-	const env = loadEnv(mode.mode, process.cwd());
+	const env = loadEnv(mode.mode, __dirname);
+	const publicPath = env.VITE_PUBLIC_PATH?.trim() || '/';
 	return {
 		plugins: [vue(), vueSetupExtend()],
-		root: process.cwd(),
+		root: __dirname,
 		resolve: { alias },
-		base: mode.command === 'serve' ? './' : env.VITE_PUBLIC_PATH,
+		base: mode.command === 'serve' ? '/' : publicPath,
 		optimizeDeps: {
 			include: ['element-plus/lib/locale/lang/zh-cn', 'element-plus/lib/locale/lang/en', 'element-plus/lib/locale/lang/zh-tw'],
 		},

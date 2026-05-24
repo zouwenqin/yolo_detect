@@ -10,6 +10,13 @@ import com.example.Kcsj.mapper.VideoRecordsMapper;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
+import java.io.File;
+import java.net.URL;
+import java.net.URLDecoder;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
 
 @RestController
 @RequestMapping("/videoRecords")
@@ -52,10 +59,57 @@ public class VideoRecordsController {
         return Result.success(Page);
     }
 
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/{id:\\d+}")
     public Result<?> delete(@PathVariable int id) {
+        VideoRecords record = videoRecordsMapper.selectById(id);
+        if (record != null) {
+            deleteResultVideo(record.getOutVideo());
+        }
         videoRecordsMapper.deleteById(id);
         return Result.success();
+    }
+
+    @DeleteMapping("/byInput")
+    public Result<?> deleteByInputVideo(@RequestParam(defaultValue = "") String inputVideo) {
+        if (StrUtil.isBlank(inputVideo)) {
+            return Result.error("-1", "missing inputVideo");
+        }
+        LambdaQueryWrapper<VideoRecords> wrapper = Wrappers.<VideoRecords>lambdaQuery()
+                .eq(VideoRecords::getInputVideo, inputVideo);
+        List<VideoRecords> records = videoRecordsMapper.selectList(wrapper);
+        for (VideoRecords record : records) {
+            deleteResultVideo(record.getOutVideo());
+            videoRecordsMapper.deleteById(record.getId());
+        }
+        return Result.success(records.size());
+    }
+
+    private void deleteResultVideo(String outVideo) {
+        if (StrUtil.isBlank(outVideo)) {
+            return;
+        }
+        try {
+            String fileName = extractFileName(outVideo);
+            if (StrUtil.isBlank(fileName)) {
+                return;
+            }
+            Path filesDir = Paths.get(System.getProperty("user.dir"), "files").toAbsolutePath().normalize();
+            Path target = filesDir.resolve(fileName).normalize();
+            if (target.startsWith(filesDir)) {
+                Files.deleteIfExists(target);
+            }
+        } catch (Exception ignored) {
+            // Keep record deletion tolerant when the derived result video is already missing.
+        }
+    }
+
+    private String extractFileName(String outVideo) throws Exception {
+        String path = outVideo;
+        if (outVideo.startsWith("http://") || outVideo.startsWith("https://")) {
+            path = new URL(outVideo).getPath();
+        }
+        String fileName = new File(path).getName();
+        return URLDecoder.decode(fileName, "UTF-8");
     }
 
     @PostMapping("/update")

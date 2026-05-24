@@ -95,6 +95,7 @@ const menus = [
 	{ key: 'stats', label: '行为统计', path: '/behaviorStats', icon: markRaw(PieChart) },
 	{ key: 'ai', label: 'AI 辅助干预', path: '/aiIntervention', icon: markRaw(ChatDotRound) },
 	{ key: 'report', label: '干预报告', path: '/interventionReport', icon: markRaw(Tickets) },
+	{ key: 'history', label: '检测历史', path: '/detectionHistory', icon: markRaw(Document) },
 	{ key: 'settings', label: '功能设置', path: '/demoSettings', icon: markRaw(Setting) },
 ];
 </script>

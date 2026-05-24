@@ -92,10 +92,7 @@
 							<span>创新亮点</span>
 							<h3>AI 辅助干预模块</h3>
 						</div>
-						<el-select v-model="state.provider" size="small" style="width: 116px">
-							<el-option label="阿里千问" value="qwen" />
-							<el-option label="Kimi" value="kimi" />
-						</el-select>
+						<el-tag type="success" effect="plain">MiniMax</el-tag>
 					</div>
 					<div class="event-card">
 						<div class="event-id">{{ state.event.eventId }}</div>
@@ -128,6 +125,7 @@ import { computed, reactive, ref, onMounted, nextTick } from 'vue';
 import type { UploadInstance, UploadProps } from 'element-plus';
 import { ElMessage } from 'element-plus';
 import request from '/@/utils/request';
+import { normalizeAdviceResult } from '/@/utils/advice';
 import { Plus } from '@element-plus/icons-vue';
 import { useUserInfo } from '/@/stores/userInfo';
 import { storeToRefs } from 'pinia';
@@ -150,7 +148,7 @@ const state = reactive({
 	kind_items: [{ value: 'class', label: '课堂学生行为检测' }],
 	img: '',
 	detectStatus: '等待上传素材',
-	provider: 'qwen',
+	provider: 'minmax',
 	predictionResult: {
 		label: [] as string[],
 		confidence: '',
@@ -165,7 +163,7 @@ const state = reactive({
 		reason: '尚未检测到需要研判的图片行为事件',
 		promptPreview: '检测事件 #01，等待图片检测结果生成Prompt。',
 		advice: defaultAdvice,
-		provider: 'qwen',
+		provider: 'minmax',
 	},
 	form: {
 		username: '',
@@ -177,7 +175,7 @@ const state = reactive({
 	},
 });
 
-const providerText = computed(() => state.provider === 'kimi' ? 'Kimi' : '阿里千问');
+const providerText = computed(() => 'MiniMax');
 const behaviorText = (behavior: string) => ({ sleep: '疑似睡觉', lie_desk: '趴桌', head_down: '持续低头', phone: '玩手机', focus: '课堂专注', none: '暂无事件' } as any)[behavior] || behavior || '课堂行为';
 const riskText = (risk: string) => ({ high: '高风险', medium: '中风险', low: '低风险', normal: '正常' } as any)[risk] || '正常';
 const riskTagType = (risk: string) => ({ high: 'danger', medium: 'warning', low: 'info', normal: 'success' } as any)[risk] || 'success';
@@ -340,9 +338,14 @@ const generateAdvice = () => {
 		scene: `课堂图片检测，使用${providerText.value}生成教师沟通建议`,
 	}).then((res) => {
 		if (res.code == 0) {
-			state.event.advice = res.data || defaultAdvice;
+			const result = normalizeAdviceResult(res.data, defaultAdvice);
+			state.event.advice = result.advice;
 			saveInterventionRecord();
-			ElMessage.success('AI辅助干预建议已生成');
+			if (result.fallback) {
+				ElMessage.warning(result.message || 'MiniMax 暂未返回，已使用本地模板');
+			} else {
+				ElMessage.success(`MiniMax ${result.model || ''} 辅助干预建议已生成`.trim());
+			}
 		} else {
 			state.event.advice = defaultAdvice;
 			ElMessage.warning('建议接口不可用，已使用本地模板');

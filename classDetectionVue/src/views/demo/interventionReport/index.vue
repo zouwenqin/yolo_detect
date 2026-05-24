@@ -1,79 +1,96 @@
 <template>
-	<DemoShell active="report" title="干预报告" status="报告已生成">
+	<DemoShell active="report" title="教师跟进记录" :status="selectedClue ? '记录可导出' : '等待检测结果'">
 		<div class="report-page">
 			<section class="panel report-preview">
 				<div class="report-header">
 					<div>
-						<span>课堂行为检测与AI辅助干预报告</span>
+						<span>课堂异常行为检测与教师跟进记录</span>
 						<h2>{{ demoState.material.sourceName }}</h2>
 					</div>
 					<div class="report-meta">
-						<p>生成时间：2026-05-11</p>
-						<p>报告类型：比赛演示版</p>
+						<p>生成时间：{{ reportDate }}</p>
+						<p>用途：教师沟通辅助</p>
 					</div>
 				</div>
 
-				<div class="overview-grid">
-					<div>
-						<span>检测事件</span>
-						<strong>{{ demoState.events.length }}</strong>
+				<template v-if="selectedClue">
+					<div class="overview-grid">
+						<div>
+							<span>异常线索</span>
+							<strong>{{ focusClues.length }}</strong>
+						</div>
+						<div>
+							<span>最高风险</span>
+							<strong>风险{{ riskText(maxRisk) }}</strong>
+						</div>
+						<div>
+							<span>重点行为</span>
+							<strong>{{ behaviorText(selectedClue.behaviorType) }}</strong>
+						</div>
+						<div>
+							<span>AI建议</span>
+							<strong>{{ selectedClue.advice ? '已生成' : '待生成' }}</strong>
+						</div>
 					</div>
-					<div>
-						<span>最高风险</span>
-						<strong>风险{{ riskText(maxRisk) }}</strong>
-					</div>
-					<div>
-						<span>重点行为</span>
-						<strong>{{ behaviorText(currentEvent.behaviorType) }}</strong>
-					</div>
-					<div>
-						<span>AI建议</span>
-						<strong>{{ demoState.aiHistory.length }}</strong>
-					</div>
-				</div>
 
-				<section class="report-section">
-					<h3>一、检测概况</h3>
-					<p>系统基于录制课堂视频素材完成行为识别和事件研判。本演示版不进行学生实名追踪，输出结果以“检测事件”为单位，用于辅助教师理解课堂状态。</p>
-				</section>
+					<section class="report-section">
+						<h3>一、检测摘要</h3>
+						<p>系统基于录制课堂视频素材完成异常行为识别，并将重复检测记录聚合为重点线索。本次报告围绕最需要教师关注的课堂异常行为展开。</p>
+					</section>
 
-				<section class="report-section">
-					<h3>二、重点事件</h3>
-					<div class="event-line">
-						<el-tag :type="riskTagType(currentEvent.riskLevel)">风险{{ riskText(currentEvent.riskLevel) }}</el-tag>
-						<strong>{{ currentEvent.eventId }} · {{ behaviorText(currentEvent.behaviorType) }} · {{ currentEvent.durationText }}</strong>
-					</div>
-					<p>{{ currentEvent.reason }}</p>
-				</section>
+					<section class="report-section">
+						<h3>二、重点事件</h3>
+						<div class="event-line">
+							<el-tag :type="riskTagType(selectedClue.riskLevel)">风险{{ riskText(selectedClue.riskLevel) }}</el-tag>
+							<strong>{{ behaviorText(selectedClue.behaviorType) }} · {{ selectedClue.durationText }} · {{ selectedClue.eventCount }} 条同类记录</strong>
+						</div>
+						<p>{{ selectedClue.evidenceText }}</p>
+					</section>
 
-				<section class="report-section">
-					<h3>三、AI沟通建议</h3>
-					<p>{{ currentEvent.advice }}</p>
-				</section>
+					<section class="report-section">
+						<h3>三、风险说明</h3>
+						<p>{{ selectedClue.reason }}</p>
+						<p>该风险来自持续时长、行为类型和课堂场景的综合提示，仅用于提醒教师进一步观察与沟通确认。</p>
+					</section>
 
-				<section class="report-section">
-					<h3>四、后续跟进建议</h3>
-					<ul>
-						<li>建议教师先以关怀身体状态和学习压力为切入点，避免当众批评。</li>
-						<li>若同类异常行为在后续课堂反复出现，可同步辅导员或心理老师进行跟进。</li>
-						<li>报告仅作为课堂行为研判与沟通辅助，不作为心理诊断结论。</li>
-					</ul>
-				</section>
+					<section class="report-section">
+						<h3>四、教师沟通建议</h3>
+						<p>{{ selectedClue.advice || '建议先在 AI 辅助干预页面生成沟通建议，再同步到本记录。' }}</p>
+					</section>
+
+					<section class="report-section">
+						<h3>五、后续跟进</h3>
+						<ul>
+							<li>课后单独、温和询问学生近期身体状态、睡眠和课程压力。</li>
+							<li>不要在课堂公开点名或给学生贴心理标签。</li>
+							<li>若同类线索反复出现，可同步辅导员或心理老师做进一步支持。</li>
+							<li>本记录仅作课堂行为研判和沟通辅助，不作为心理诊断结论。</li>
+						</ul>
+					</section>
+				</template>
+				<el-empty v-else description="请先完成视频检测，系统将根据真实异常线索生成教师跟进记录">
+					<el-button type="primary" @click="router.push('/videoPredict')">去视频检测</el-button>
+				</el-empty>
 			</section>
 
 			<aside class="panel report-actions">
 				<div class="section-title">
-					<h3>报告操作</h3>
-					<p>演示阶段导出为本地文本/Word兼容文件，便于现场验收。</p>
+					<h3>记录操作</h3>
+					<p>导出内容面向教师后续跟进，保留检测依据、沟通建议和非诊断说明。</p>
 				</div>
-				<el-button type="primary" @click="downloadReport('txt')">导出报告文本</el-button>
-				<el-button @click="downloadReport('doc')">导出Word兼容文件</el-button>
-				<el-button @click="router.push('/aiIntervention')">返回AI辅助干预</el-button>
+				<el-button type="primary" :disabled="!selectedClue" @click="downloadReport('txt')">导出教师跟进记录</el-button>
+				<el-button :disabled="!selectedClue" @click="downloadReport('doc')">导出 Word 兼容文件</el-button>
+				<el-button @click="router.push('/aiIntervention')">返回 AI 沟通助手</el-button>
 
 				<div class="event-picker">
-					<h3>报告事件</h3>
-					<button v-for="item in demoState.events" :key="item.eventId" :class="{ active: item.eventId === currentEvent.eventId }" @click="setCurrentEvent(item.eventId)">
-						<span>{{ item.eventId }} · {{ behaviorText(item.behaviorType) }}</span>
+					<h3>报告线索</h3>
+					<button
+						v-for="item in topFocusClues"
+						:key="item.clueId"
+						:class="{ active: item.eventIds.includes(demoState.selectedEventId) }"
+						@click="setCurrentEvent(item.eventId)"
+					>
+						<span>{{ behaviorText(item.behaviorType) }}</span>
 						<em>风险{{ riskText(item.riskLevel) }} · {{ item.durationText }}</em>
 					</button>
 				</div>
@@ -83,28 +100,34 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
-import { behaviorText, currentEvent, demoState, exportReportText, riskTagType, riskText, setCurrentEvent } from '/@/views/demo/demoState';
+import { behaviorText, currentFocusClue, demoState, exportReportText, focusClues, riskTagType, riskText, setCurrentEvent, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
+import request from '/@/utils/request';
 
 const router = useRouter();
-
-const maxRisk = computed(() => {
-	if (demoState.events.some((item) => item.riskLevel === 'high')) return 'high';
-	if (demoState.events.some((item) => item.riskLevel === 'medium')) return 'medium';
-	if (demoState.events.some((item) => item.riskLevel === 'low')) return 'low';
-	return 'normal';
-});
+const selectedClue = computed(() => currentFocusClue.value);
+const reportDate = computed(() => new Date().toLocaleDateString());
+const maxRisk = computed(() => topFocusClues.value[0]?.riskLevel || 'normal');
 
 function downloadReport(type: 'txt' | 'doc') {
 	const blob = new Blob([exportReportText()], { type: 'text/plain;charset=utf-8' });
 	const link = document.createElement('a');
 	link.href = URL.createObjectURL(blob);
-	link.download = `${currentEvent.value.eventId}-干预报告.${type}`;
+	link.download = `${selectedClue.value?.eventId || '课堂异常'}-教师跟进记录.${type}`;
 	link.click();
 	URL.revokeObjectURL(link.href);
 }
+
+async function loadWarningRecords() {
+	try {
+		const res = await request.get('/api/warningRecords/all');
+		if (res?.code == 0 && Array.isArray(res.data)) syncWarningRecords(res.data);
+	} catch (error) {}
+}
+
+onMounted(loadWarningRecords);
 </script>
 
 <style scoped lang="scss">

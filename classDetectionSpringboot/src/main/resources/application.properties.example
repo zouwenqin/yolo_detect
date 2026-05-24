@@ -12,3 +12,9 @@ server.port=9999
 file.ip=localhost
 spring.servlet.multipart.max-file-size=500MB
 spring.servlet.multipart.max-request-size=500MB
+
+# MiniMax LLM config for warning advice and follow-up chat.
+# Do not commit a real API key.
+llm.api-key=YOUR_MINMAX_API_KEY
+llm.api-url=https://api.minimaxi.com/v1/text/chatcompletion_v2
+llm.model=MiniMax-M2.7
