@@ -1,6 +1,8 @@
 <template>
 	<DemoShell active="result" title="课堂异常发现" :status="pageStatus">
 		<div class="result-page">
+			<DetectionSourceSelector v-model="selectedSource" :records="warningRecords" :history-records="videoRecords" :loading="loading" @change="handleSourceChange" />
+
 			<section class="panel overview-panel">
 				<div class="section-title">
 					<div>
@@ -126,13 +128,17 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
-import { behaviorText, currentFocusClue, demoState, focusClues, realEvents, riskTagType, riskText, setCurrentEvent, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
+import DetectionSourceSelector from '/@/views/demo/components/DetectionSourceSelector.vue';
+import { behaviorText, currentFocusClue, demoState, focusClues, realEvents, riskTagType, riskText, setCurrentEvent, sourceNameKey, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
 import request from '/@/utils/request';
 
 const router = useRouter();
 const loading = ref(false);
 const loadError = ref('');
 const showRaw = ref(false);
+const selectedSource = ref('');
+const warningRecords = ref<any[]>([]);
+const videoRecords = ref<any[]>([]);
 
 const clueCount = computed(() => focusClues.value.length);
 const selectedClue = computed(() => currentFocusClue.value);
@@ -144,13 +150,26 @@ function handleClueClick(eventId: string) {
 	setCurrentEvent(eventId);
 }
 
+function handleSourceChange(option: any) {
+	if (!option || !warningRecords.value.length) return;
+	selectedSource.value = option.value;
+	syncWarningRecords(warningRecords.value, option.inputVideo || option.label);
+	if (topFocusClues.value.length) setCurrentEvent(topFocusClues.value[0].eventId);
+}
+
 async function loadWarningRecords() {
 	loading.value = true;
 	loadError.value = '';
 	try {
-		const res = await request.get('/api/warningRecords/all');
-		if (res?.code == 0 && Array.isArray(res.data)) {
-			syncWarningRecords(res.data);
+		const [warningRes, videoRes] = await Promise.all([
+			request.get('/api/warningRecords/all'),
+			request.get('/api/videoRecords/all'),
+		]);
+		if (videoRes?.code == 0 && Array.isArray(videoRes.data)) videoRecords.value = videoRes.data;
+		if (warningRes?.code == 0 && Array.isArray(warningRes.data)) {
+			warningRecords.value = warningRes.data;
+			syncWarningRecords(warningRes.data);
+			selectedSource.value = sourceNameKey(demoState.material.sourceName);
 			if (topFocusClues.value.length && !topFocusClues.value.some((item) => item.eventIds.includes(demoState.selectedEventId))) {
 				setCurrentEvent(topFocusClues.value[0].eventId);
 			}
@@ -173,9 +192,13 @@ onMounted(loadWarningRecords);
 	height: 100%;
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) 420px;
-	grid-template-rows: auto minmax(0, 1fr);
+	grid-template-rows: auto auto minmax(0, 1fr);
 	gap: 16px;
 	overflow: hidden;
+}
+
+.source-panel {
+	grid-column: 1 / 3;
 }
 
 .panel {
@@ -192,7 +215,7 @@ onMounted(loadWarningRecords);
 }
 
 .evidence-panel {
-	grid-row: 1 / 3;
+	grid-row: 2 / 4;
 	grid-column: 2;
 	overflow-y: auto;
 }
@@ -400,6 +423,10 @@ onMounted(loadWarningRecords);
 		grid-template-columns: 1fr;
 		grid-template-rows: none;
 		overflow: visible;
+	}
+
+	.source-panel {
+		grid-column: auto;
 	}
 
 	.evidence-panel {

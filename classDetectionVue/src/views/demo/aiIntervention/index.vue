@@ -1,6 +1,8 @@
 <template>
 	<DemoShell active="ai" title="定性与沟通助手" :status="selectedClue ? '建议可生成' : '等待检测结果'">
 		<div class="ai-page">
+			<DetectionSourceSelector v-model="selectedSource" :records="warningRecords" :history-records="videoRecords" @change="handleSourceChange" />
+
 			<section class="panel event-panel">
 				<div class="section-title">
 					<div>
@@ -113,7 +115,8 @@ import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { ChatDotRound } from '@element-plus/icons-vue';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
-import { applyAdvice, behaviorText, buildPrompt, currentFocusClue, demoState, fallbackAdvice, parseDurationSeconds, riskText, setCurrentEvent, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
+import DetectionSourceSelector from '/@/views/demo/components/DetectionSourceSelector.vue';
+import { applyAdvice, behaviorText, buildPrompt, currentFocusClue, demoState, fallbackAdvice, parseDurationSeconds, riskText, setCurrentEvent, sourceNameKey, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
 import { normalizeAdviceResult } from '/@/utils/advice';
 import request from '/@/utils/request';
 
@@ -124,6 +127,9 @@ const loading = ref(false);
 const chatLoading = ref(false);
 const chatInput = ref('');
 const selectedEventId = ref(currentFocusClue.value?.eventId || '');
+const selectedSource = ref('');
+const warningRecords = ref<any[]>([]);
+const videoRecords = ref<any[]>([]);
 const chatMessages = ref<ChatMessage[]>([]);
 
 const selectedClue = computed(() => currentFocusClue.value);
@@ -152,6 +158,13 @@ function buildAdviceRequest(extra: Record<string, any> = {}) {
 		provider: demoState.provider,
 		...extra,
 	};
+}
+
+function handleSourceChange(option: any) {
+	if (!option || !warningRecords.value.length) return;
+	selectedSource.value = option.value;
+	syncWarningRecords(warningRecords.value, option.inputVideo || option.label);
+	if (topFocusClues.value.length) setCurrentEvent(topFocusClues.value[0].eventId);
 }
 
 function generateAdvice() {
@@ -227,9 +240,15 @@ function copyAdvice() {
 
 async function loadWarningRecords() {
 	try {
-		const res = await request.get('/api/warningRecords/all');
-		if (res?.code == 0 && Array.isArray(res.data)) {
-			syncWarningRecords(res.data);
+		const [warningRes, videoRes] = await Promise.all([
+			request.get('/api/warningRecords/all'),
+			request.get('/api/videoRecords/all'),
+		]);
+		if (videoRes?.code == 0 && Array.isArray(videoRes.data)) videoRecords.value = videoRes.data;
+		if (warningRes?.code == 0 && Array.isArray(warningRes.data)) {
+			warningRecords.value = warningRes.data;
+			syncWarningRecords(warningRes.data);
+			selectedSource.value = sourceNameKey(demoState.material.sourceName);
 			if (topFocusClues.value.length && !selectedEventId.value) setCurrentEvent(topFocusClues.value[0].eventId);
 		}
 	} catch (error) {}
@@ -243,9 +262,13 @@ onMounted(loadWarningRecords);
 	height: 100%;
 	display: grid;
 	grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
-	grid-template-rows: auto minmax(0, 1fr);
+	grid-template-rows: auto auto minmax(0, 1fr);
 	gap: 16px;
 	overflow: hidden;
+}
+
+.source-panel {
+	grid-column: 1 / 3;
 }
 
 .panel {
@@ -257,7 +280,7 @@ onMounted(loadWarningRecords);
 }
 
 .advice-panel {
-	grid-row: 1 / 3;
+	grid-row: 2 / 4;
 	grid-column: 2;
 	overflow-y: auto;
 }
@@ -424,6 +447,10 @@ onMounted(loadWarningRecords);
 		grid-template-columns: 1fr;
 		grid-template-rows: none;
 		overflow: visible;
+	}
+
+	.source-panel {
+		grid-column: auto;
 	}
 
 	.advice-panel {

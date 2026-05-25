@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,8 @@ BEHAVIOR_TONES = {
     "lie_desk": "high",
     "other_action": "low",
 }
+
+HEATMAP_VIOLATION_BEHAVIORS = {"head_down", "lie_desk", "sleep"}
 
 
 def now_text():
@@ -270,6 +273,36 @@ class ClassPipelineTaskManager:
         except Exception:
             return source
 
+    def get_preprocessed_prediction_detail(self, dataset):
+        dataset_dir = self._resolve_preprocessed_dir(dataset)
+        pred_csv = dataset_dir / "predictions.csv"
+        if not pred_csv.exists():
+            raise FileNotFoundError(f"predictions.csv not found: {pred_csv}")
+
+        input_video = self._resolve_preprocessed_input_video(dataset)
+        video_info = self._read_video_info(input_video) if input_video else {}
+        fps = float(video_info.get("fpsValue") or 0) if video_info else 0
+        if fps <= 0 and input_video:
+            fps = self._read_fps(input_video)
+        if fps <= 0:
+            fps = 25
+
+        windows = self._read_prediction_windows(pred_csv, fps, 0)
+        track_csv = self._first_existing(dataset_dir / "track_boxes.csv", dataset_dir / "track_boxes" / "track_boxes.csv")
+        keypoints_csv = self._first_existing(dataset_dir / "keypoints.csv", dataset_dir / "keypoints" / "keypoints.csv")
+        return {
+            "dataset": Path(str(dataset or "sample")).name,
+            "sourceName": input_video.name if input_video else f"{Path(str(dataset or 'sample')).name}.mp4",
+            "inputPath": str(input_video) if input_video else "",
+            "inputVideoUrl": f"/flask/class-preprocessed/{Path(str(dataset or 'sample')).name}/input-video" if input_video else "",
+            "resultVideoUrl": f"/flask/class-preprocessed/{Path(str(dataset or 'sample')).name}/result-video",
+            "videoInfo": video_info,
+            "predictionWindows": windows,
+            "behaviorHeatmap": self._build_behavior_heatmap(track_csv, windows, video_info, keypoints_csv),
+            "behaviorStats": self._build_behavior_stats(windows),
+            "trackSummary": self._build_track_summary(windows),
+        }
+
     def stats(self, task_id):
         task = self.tasks.get(task_id) or {}
         return task.get("behaviorStats") or []
@@ -343,6 +376,7 @@ class ClassPipelineTaskManager:
             "behaviorStats": task.get("behaviorStats", []),
             "trackSummary": task.get("trackSummary", []),
             "predictionWindows": task.get("predictionWindows", []),
+            "behaviorHeatmap": task.get("behaviorHeatmap", []),
             "warningState": self._warning_state(task),
             "events": task.get("events", []),
         }
@@ -709,7 +743,10 @@ class ClassPipelineTaskManager:
         if not task.get("videoInfo"):
             task["videoInfo"] = self._read_video_info(task["inputPath"])
         windows = self._read_prediction_windows(pred_csv, fps, task.get("confThr"))
+        track_csv = self._first_existing(task_dir / "track_boxes.csv", task_dir / "track_boxes" / "track_boxes.csv")
+        keypoints_csv = self._first_existing(task_dir / "keypoints.csv", task_dir / "keypoints" / "keypoints.csv")
         task["predictionWindows"] = windows
+        task["behaviorHeatmap"] = self._build_behavior_heatmap(track_csv, windows, task.get("videoInfo") or {}, keypoints_csv)
         task["behaviorStats"] = self._build_behavior_stats(windows)
         task["trackSummary"] = self._build_track_summary(windows)
         task["events"] = self._build_events(task, windows)
@@ -742,6 +779,8 @@ class ClassPipelineTaskManager:
             duration_seconds = frames / fps if fps > 0 and frames > 0 else 0
             return {
                 "resolution": f"{width}×{height}" if width and height else "",
+                "width": width,
+                "height": height,
                 "duration": self._format_clock(duration_seconds),
                 "durationSeconds": round(duration_seconds, 2),
                 "fps": f"{round(fps, 2):g}fps" if fps > 0 else "",
@@ -845,6 +884,257 @@ class ClassPipelineTaskManager:
             })
         summary.sort(key=lambda item: item["trackId"])
         return summary
+
+    def _build_behavior_heatmap(self, track_csv, windows, video_info=None, keypoints_csv=None):
+        if not track_csv or not Path(track_csv).exists() or not windows:
+            return []
+
+        width, height = self._video_dimensions(video_info or {})
+        boxes_by_track = defaultdict(list)
+        with open(track_csv, "r", encoding="utf-8-sig", newline="") as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                try:
+                    track_id = int(float(row.get("track_id") or 0))
+                    frame_id = int(float(row.get("frame_id") or row.get("frame") or 0))
+                    x1 = float(row.get("x1") or 0)
+                    y1 = float(row.get("y1") or 0)
+                    x2 = float(row.get("x2") or x1)
+                    y2 = float(row.get("y2") or y1)
+                except (TypeError, ValueError):
+                    continue
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                width = max(width, x2)
+                height = max(height, y2)
+                boxes_by_track[track_id].append((frame_id, (x1 + x2) / 2, (y1 + y2) / 2))
+
+        keypoints_by_track = self._read_heatmap_keypoints(keypoints_csv) if keypoints_csv else {}
+        if keypoints_by_track:
+            for items in keypoints_by_track.values():
+                for item in items:
+                    width = max(width, item["x"])
+                    height = max(height, item["y"])
+
+        if width <= 0 or height <= 0:
+            return []
+
+        frames_by_track = {}
+        for track_id, boxes in boxes_by_track.items():
+            boxes.sort(key=lambda item: item[0])
+            frames_by_track[track_id] = [item[0] for item in boxes]
+        keypoint_frames_by_track = {}
+        for track_id, items in keypoints_by_track.items():
+            items.sort(key=lambda item: item["frame"])
+            keypoint_frames_by_track[track_id] = [item["frame"] for item in items]
+
+        cols, rows = 32, 18
+        bucket_seconds = 3.0
+        fps = float((video_info or {}).get("fpsValue") or 0) or 25.0
+        duration_seconds = float((video_info or {}).get("durationSeconds") or 0)
+        cells = defaultdict(float)
+        for window in windows:
+            track_id = int(window.get("trackId") or 0)
+            behavior_type, _ = normalize_pipeline_label(window.get("behaviorType") or "other_action")
+            if behavior_type not in HEATMAP_VIOLATION_BEHAVIORS:
+                continue
+            raw_confidence = window.get("confidence")
+            confidence = float(raw_confidence) if raw_confidence not in (None, "") else 1.0
+            if confidence < 0.8:
+                continue
+            boxes = boxes_by_track.get(track_id)
+            frames = frames_by_track.get(track_id)
+            keypoints = keypoints_by_track.get(track_id)
+            keypoint_frames = keypoint_frames_by_track.get(track_id)
+            if (not boxes or not frames) and (not keypoints or not keypoint_frames):
+                continue
+            start_frame = int(window.get("startFrame") or 0)
+            end_frame = int(window.get("endFrame") or start_frame)
+            source_points = []
+            anchor_type = "box"
+            if keypoints and keypoint_frames:
+                kp_start = bisect_left(keypoint_frames, start_frame)
+                kp_end = bisect_right(keypoint_frames, end_frame)
+                if kp_end > kp_start:
+                    if behavior_type in ("lie_desk", "sleep"):
+                        source_points = [
+                            (item["frame"], item.get("bodyX", item["x"]), item.get("bodyY", item["y"]), item.get("bodyScore", item["score"]), item.get("bodyAnchorType", item["anchorType"]))
+                            for item in keypoints[kp_start:kp_end]
+                        ]
+                    else:
+                        source_points = [
+                            (item["frame"], item["x"], item["y"], item["score"], item["anchorType"])
+                            for item in keypoints[kp_start:kp_end]
+                        ]
+                    anchor_type = source_points[0][4] if source_points else "keypoint"
+            if not source_points and boxes and frames:
+                start_index = bisect_left(frames, start_frame)
+                end_index = bisect_right(frames, end_frame)
+                if end_index > start_index:
+                    source_points = [(frame_id, center_x, center_y, 1.0, "box") for frame_id, center_x, center_y in boxes[start_index:end_index]]
+            if not source_points:
+                continue
+            sample_total = len(source_points)
+            stride = max(1, sample_total // 18)
+            sampled_points = source_points[::stride]
+            window_seconds = float(window.get("durationSeconds") or 0)
+            if window_seconds <= 0:
+                window_seconds = max(0, end_frame - start_frame + 1) / fps if fps > 0 else bucket_seconds
+            sample_seconds = max(0.2, window_seconds / max(1, len(sampled_points)))
+            for frame_id, center_x, center_y, point_score, anchor_type in sampled_points:
+                second = max(0.0, float(frame_id) / fps) if fps > 0 else float(window.get("startSecond") or 0)
+                if duration_seconds > 0:
+                    second = min(duration_seconds, second)
+                if not self._heatmap_point_in_seat_zone(center_x / width if width else 0, center_y / height if height else 0):
+                    continue
+                bucket_start = int(second // bucket_seconds) * bucket_seconds
+                col = min(cols - 1, max(0, int(center_x / width * cols)))
+                row = min(rows - 1, max(0, int(center_y / height * rows)))
+                cells[(behavior_type, track_id, anchor_type, bucket_start, col, row)] += sample_seconds * confidence * max(0.25, float(point_score or 0.5))
+
+        buckets = defaultdict(list)
+        for (behavior_type, track_id, anchor_type, bucket_start, col, row), value in cells.items():
+            bucket_end = bucket_start + bucket_seconds
+            if duration_seconds > 0:
+                bucket_end = min(duration_seconds, bucket_end)
+            buckets[bucket_start].append({
+                "trackId": track_id,
+                "behaviorType": behavior_type,
+                "behaviorName": BEHAVIOR_NAMES.get(behavior_type, behavior_type),
+                "anchorType": anchor_type,
+                "riskLevel": BEHAVIOR_TONES.get(behavior_type, "low"),
+                "x": round((col + 0.5) / cols, 4),
+                "y": round((row + 0.5) / rows, 4),
+                "col": col,
+                "row": row,
+                "startSecond": round(bucket_start, 2),
+                "endSecond": round(bucket_end, 2),
+                "timeSecond": round((bucket_start + bucket_end) / 2, 2),
+                "value": round(value, 2),
+            })
+
+        heatmap = []
+        for bucket_start in sorted(buckets):
+            items = sorted(buckets[bucket_start], key=lambda item: item["value"], reverse=True)
+            heatmap.extend(items[:90])
+        heatmap.sort(key=lambda item: item["value"], reverse=True)
+        return heatmap
+
+    def _heatmap_point_in_seat_zone(self, x, y):
+        if x < 0.18 and y > 0.50:
+            return False
+        if x > 0.92 or y < 0.20 or y > 0.90:
+            return False
+        seat_rois = (
+            (0.20, 0.27, 0.115, 0.10), (0.34, 0.27, 0.115, 0.10), (0.48, 0.27, 0.115, 0.10), (0.62, 0.27, 0.115, 0.10), (0.76, 0.27, 0.115, 0.10),
+            (0.18, 0.41, 0.125, 0.11), (0.33, 0.41, 0.125, 0.11), (0.48, 0.41, 0.125, 0.11), (0.63, 0.41, 0.125, 0.11), (0.78, 0.41, 0.115, 0.11),
+            (0.16, 0.56, 0.13, 0.12), (0.32, 0.56, 0.13, 0.12), (0.48, 0.56, 0.13, 0.12), (0.64, 0.56, 0.13, 0.12), (0.80, 0.56, 0.11, 0.12),
+            (0.15, 0.72, 0.13, 0.13), (0.31, 0.72, 0.13, 0.13), (0.47, 0.72, 0.13, 0.13), (0.63, 0.72, 0.13, 0.13), (0.79, 0.72, 0.12, 0.13),
+        )
+        padding = 0.018
+        for left, top, width, height in seat_rois:
+            if left - padding <= x <= left + width + padding and top - padding <= y <= top + height + padding:
+                return True
+        return False
+
+    def _read_heatmap_keypoints(self, keypoints_csv):
+        if not keypoints_csv or not Path(keypoints_csv).exists():
+            return {}
+        grouped = defaultdict(list)
+        with open(keypoints_csv, "r", encoding="utf-8-sig", newline="") as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                try:
+                    track_id = int(float(row.get("track_id") or 0))
+                    frame_id = int(float(row.get("frame_id") or row.get("frame") or 0))
+                except (TypeError, ValueError):
+                    continue
+                point = self._best_heatmap_anchor(row)
+                if not point:
+                    continue
+                x, y, score, anchor_type = point
+                body_point = self._body_heatmap_anchor(row)
+                grouped[track_id].append({
+                    "frame": frame_id,
+                    "x": x,
+                    "y": y,
+                    "score": score,
+                    "anchorType": anchor_type,
+                    "bodyX": body_point[0] if body_point else x,
+                    "bodyY": body_point[1] if body_point else y,
+                    "bodyScore": body_point[2] if body_point else score,
+                    "bodyAnchorType": body_point[3] if body_point else anchor_type,
+                })
+        return grouped
+
+    def _best_heatmap_anchor(self, row):
+        head_points = self._valid_keypoints(row, ("nose", "left_eye", "right_eye", "left_ear", "right_ear"), 0.2)
+        if head_points:
+            return self._average_keypoints(head_points, "head")
+        shoulder_points = self._valid_keypoints(row, ("left_shoulder", "right_shoulder"), 0.2)
+        if shoulder_points:
+            return self._average_keypoints(shoulder_points, "shoulder")
+        try:
+            x1 = float(row.get("bbox_x1") or row.get("x1") or 0)
+            y1 = float(row.get("bbox_y1") or row.get("y1") or 0)
+            x2 = float(row.get("bbox_x2") or row.get("x2") or x1)
+            y2 = float(row.get("bbox_y2") or row.get("y2") or y1)
+        except (TypeError, ValueError):
+            return None
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return (x1 + x2) / 2, y1 + (y2 - y1) * 0.34, 0.35, "box"
+
+    def _body_heatmap_anchor(self, row):
+        shoulder_points = self._valid_keypoints(row, ("left_shoulder", "right_shoulder"), 0.2)
+        if shoulder_points:
+            x, y, score, _ = self._average_keypoints(shoulder_points, "shoulder")
+            return x, y + 8, score, "shoulder"
+        try:
+            x1 = float(row.get("bbox_x1") or row.get("x1") or 0)
+            y1 = float(row.get("bbox_y1") or row.get("y1") or 0)
+            x2 = float(row.get("bbox_x2") or row.get("x2") or x1)
+            y2 = float(row.get("bbox_y2") or row.get("y2") or y1)
+        except (TypeError, ValueError):
+            return None
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return (x1 + x2) / 2, y1 + (y2 - y1) * 0.48, 0.35, "body"
+
+    def _valid_keypoints(self, row, names, min_score):
+        points = []
+        for name in names:
+            try:
+                score = float(row.get(f"{name}_score") or 0)
+                x = float(row.get(f"{name}_x") or 0)
+                y = float(row.get(f"{name}_y") or 0)
+            except (TypeError, ValueError):
+                continue
+            if score >= min_score and x > 0 and y > 0:
+                points.append((x, y, score))
+        return points
+
+    def _average_keypoints(self, points, anchor_type):
+        weight = sum(item[2] for item in points) or 1
+        x = sum(item[0] * item[2] for item in points) / weight
+        y = sum(item[1] * item[2] for item in points) / weight
+        score = weight / len(points)
+        return x, y, score, anchor_type
+
+    def _video_dimensions(self, video_info):
+        width = int(float(video_info.get("width") or 0)) if video_info else 0
+        height = int(float(video_info.get("height") or 0)) if video_info else 0
+        if width and height:
+            return width, height
+        text = str(video_info.get("resolution") or "") if video_info else ""
+        for sep in ("×", "x", "X", "脳"):
+            if sep in text:
+                left, right = text.split(sep, 1)
+                try:
+                    return int(float(left)), int(float(right))
+                except ValueError:
+                    return 0, 0
+        return 0, 0
 
     def _build_events(self, task, windows):
         grouped = self._merged_window_stats(windows, ("trackId", "behaviorType"))

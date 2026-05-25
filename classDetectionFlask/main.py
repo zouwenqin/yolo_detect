@@ -140,6 +140,7 @@ class VideoProcessingApp:
         self.app.add_url_rule('/class-preprocessed', 'classPreprocessed', self.class_preprocessed, methods=['GET'])
         self.app.add_url_rule('/class-preprocessed/<dataset>/input-video', 'classPreprocessedInputVideo', self.class_preprocessed_input_video, methods=['GET'])
         self.app.add_url_rule('/class-preprocessed/<dataset>/result-video', 'classPreprocessedResultVideo', self.class_preprocessed_result_video, methods=['GET'])
+        self.app.add_url_rule('/class-preprocessed/<dataset>/predictions', 'classPreprocessedPredictions', self.class_preprocessed_predictions, methods=['GET'])
         self.app.add_url_rule('/sample-video', 'getSampleVideo', self.get_sample_video, methods=['GET'])
         self.app.add_url_rule('/videoTasks', 'createVideoTask', self.create_video_task, methods=['POST'])
         self.app.add_url_rule('/videoTasks/<task_id>', 'getVideoTask', self.get_video_task, methods=['GET'])
@@ -199,6 +200,13 @@ class VideoProcessingApp:
             if not result_path:
                 return jsonify({"code": -1, "message": "result video not found", "data": None}), 404
             return send_file(str(result_path), mimetype="video/mp4", conditional=True)
+        except Exception as e:
+            return jsonify({"code": -1, "message": str(e), "data": None}), 404
+
+    def class_preprocessed_predictions(self, dataset):
+        try:
+            data = self.class_pipeline.get_preprocessed_prediction_detail(dataset)
+            return jsonify({"code": 0, "message": "success", "data": data})
         except Exception as e:
             return jsonify({"code": -1, "message": str(e), "data": None}), 404
 

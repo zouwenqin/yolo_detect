@@ -296,7 +296,9 @@ const socketService = new SocketService();
 const trendChart = ref<any>(null);
 const pieChart = ref<any>(null);
 const latestPredictionWindows = ref<any[]>([]);
+const latestBehaviorHeatmap = ref<any[]>([]);
 const latestVideoDurationSeconds = ref(0);
+const latestVideoInfo = ref<any>({});
 type AiChatMessage = { role: 'user' | 'assistant'; content: string };
 const aiChatInput = ref('');
 const aiChatLoading = ref(false);
@@ -379,13 +381,17 @@ function persistVideoPageState() {
 	try {
 		sessionStorage.setItem(videoPageStorageKey, JSON.stringify({
 			previewUrl: previewUrl.value,
+			inputVideoUrl: previewUrl.value && !previewUrl.value.startsWith('blob:') ? previewUrl.value : '',
 			currentTaskId: currentTaskId.value,
+			resultVideoUrl: resultVideoUrl.value,
 			preprocessedDataset: preprocessedDataset.value,
 			sourceName: demoState.material.sourceName,
 			status: demoState.material.status,
 			progress: demoState.material.progress,
 			confidence: conf.value,
 			predictionWindows: latestPredictionWindows.value,
+			behaviorHeatmap: latestBehaviorHeatmap.value,
+			videoInfo: latestVideoInfo.value,
 			videoDurationSeconds: latestVideoDurationSeconds.value,
 		}));
 	} catch (error) {
@@ -405,6 +411,7 @@ function restoreVideoPageState() {
 		if (state.currentTaskId) currentTaskId.value = state.currentTaskId;
 		if (state.sourceName) demoState.material.sourceName = state.sourceName;
 		if (Array.isArray(state.predictionWindows)) latestPredictionWindows.value = state.predictionWindows;
+		if (Array.isArray(state.behaviorHeatmap)) latestBehaviorHeatmap.value = state.behaviorHeatmap;
 		if (Number(state.videoDurationSeconds) > 0) latestVideoDurationSeconds.value = Number(state.videoDurationSeconds);
 		if (currentTaskId.value && Number(state.progress || 0) < 100) {
 			if (state.status) demoState.material.status = state.status;
@@ -529,6 +536,7 @@ function withCache(url: string, cacheKey?: string | number) {
 
 function applyVideoInfo(info: any) {
 	if (!info) return;
+	latestVideoInfo.value = { ...latestVideoInfo.value, ...info };
 	if (info.resolution) demoState.material.resolution = info.resolution;
 	if (info.duration) demoState.material.duration = info.duration;
 	if (info.fps) demoState.material.fps = info.fps;
@@ -655,6 +663,8 @@ function resetTaskView(sourceName: string) {
 	});
 	demoState.selectedEventId = 'TASK-PENDING';
 	latestPredictionWindows.value = [];
+	latestBehaviorHeatmap.value = [];
+	latestVideoInfo.value = {};
 	scheduleChartRefresh();
 }
 
@@ -789,6 +799,8 @@ function markTaskFailed(message: string) {
 	});
 	demoState.selectedEventId = 'TASK-FAILED';
 	latestPredictionWindows.value = [];
+	latestBehaviorHeatmap.value = [];
+	latestVideoInfo.value = {};
 	scheduleChartRefresh();
 }
 
@@ -908,6 +920,12 @@ function initCharts() {
 function updateChartsFromPayload(payload: any) {
 	if (Array.isArray(payload?.predictionWindows)) {
 		latestPredictionWindows.value = payload.predictionWindows;
+	}
+	if (Array.isArray(payload?.behaviorHeatmap)) {
+		latestBehaviorHeatmap.value = payload.behaviorHeatmap;
+	}
+	if (payload?.videoInfo && typeof payload.videoInfo === 'object') {
+		latestVideoInfo.value = { ...latestVideoInfo.value, ...payload.videoInfo };
 	}
 	if (Number(payload?.videoInfo?.durationSeconds) > 0) {
 		latestVideoDurationSeconds.value = Number(payload.videoInfo.durationSeconds);
@@ -1042,6 +1060,8 @@ function updateTrendChart() {
 	}).filter((item) => item.data.some((value: number) => value > 0));
 	if (!series.length && stats.length) {
 		latestPredictionWindows.value = [];
+		latestBehaviorHeatmap.value = [];
+		latestVideoInfo.value = {};
 		updateTrendChart();
 		return;
 	}
