@@ -40,7 +40,7 @@
 						v-model="state.img"
 						ref="uploadFile"
 						class="image-uploader"
-						action="http://localhost:9999/files/upload"
+						action="/api/files/upload"
 						:show-file-list="false"
 						:on-success="handleAvatarSuccessone"
 					>

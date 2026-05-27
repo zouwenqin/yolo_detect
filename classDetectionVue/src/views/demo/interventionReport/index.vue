@@ -106,7 +106,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
 import DetectionSourceSelector from '/@/views/demo/components/DetectionSourceSelector.vue';
-import { behaviorText, currentFocusClue, demoState, exportReportText, focusClues, riskTagType, riskText, setCurrentEvent, sourceNameKey, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
+import { behaviorText, clearDemoDetectionState, currentFocusClue, demoState, exportReportText, filterWarningRecordsByHistories, focusClues, riskTagType, riskText, setCurrentEvent, sourceNameKey, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
 import request from '/@/utils/request';
 
 const router = useRouter();
@@ -140,9 +140,20 @@ async function loadWarningRecords() {
 			request.get('/api/videoRecords/all'),
 		]);
 		if (videoRes?.code == 0 && Array.isArray(videoRes.data)) videoRecords.value = videoRes.data;
+		if (!videoRecords.value.length) {
+			warningRecords.value = [];
+			selectedSource.value = '';
+			clearDemoDetectionState();
+			return;
+		}
 		if (warningRes?.code == 0 && Array.isArray(warningRes.data)) {
-			warningRecords.value = warningRes.data;
-			syncWarningRecords(warningRes.data);
+			const activeWarnings = filterWarningRecordsByHistories(warningRes.data, videoRecords.value);
+			warningRecords.value = activeWarnings;
+			if (!activeWarnings.length) {
+				clearDemoDetectionState();
+				return;
+			}
+			syncWarningRecords(activeWarnings);
 			selectedSource.value = sourceNameKey(demoState.material.sourceName);
 		}
 	} catch (error) {}

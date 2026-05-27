@@ -70,6 +70,7 @@ class ClassPipelineTaskManager:
         self.socketio = socketio
         self.project_root = Path(project_root or Path(__file__).resolve().parents[1])
         self.class_root = Path(os.environ.get("CLASS_ROOT", self.project_root / "class")).resolve()
+        self.backend_base_url = os.environ.get("BACKEND_BASE_URL", "http://localhost:9999").rstrip("/")
         self.runtime_dir = self.class_root / "runtime"
         self.pipeline_script = self.class_root / "scripts" / "run_single_pipeline.py"
         self.visualize_script = self.class_root / "scripts" / "run_single_visualize.py"
@@ -116,15 +117,21 @@ class ClassPipelineTaskManager:
 
         input_root = self.class_root / "input"
         output_root = self.class_root / "output"
-        for input_dir in sorted(input_root.glob("*"), key=lambda item: item.name.lower()) if input_root.exists() else []:
-            if not input_dir.is_dir():
+        dataset_names = set()
+        if input_root.exists():
+            dataset_names.update(path.name for path in input_root.iterdir() if path.is_dir())
+        if output_root.exists():
+            dataset_names.update(path.name for path in output_root.iterdir() if path.is_dir())
+        for name in sorted(dataset_names, key=lambda value: value.lower()):
+            if name in seen:
                 continue
-            output_dir = output_root / input_dir.name
+            input_dir = input_root / name
+            output_dir = output_root / name
             info = self._describe_preprocessed_dir(
                 output_dir,
                 input_video=self._first_video(input_dir),
-                value=input_dir.name,
-                label=input_dir.name,
+                value=name,
+                label=name,
             )
             if info:
                 datasets.append(info)
@@ -147,12 +154,7 @@ class ClassPipelineTaskManager:
         track_csv = self._first_existing(folder / "track_boxes.csv", folder / "track_boxes" / "track_boxes.csv")
         keypoints_csv = self._first_existing(folder / "keypoints.csv", folder / "keypoints" / "keypoints.csv")
         pred_csv = folder / "predictions.csv"
-        result_video = self._first_existing(
-            folder / "result_h264.mp4",
-            folder / "videos" / "result_h264.mp4",
-            folder / "result.mp4",
-            folder / "videos" / "result.mp4",
-        )
+        result_video = self._find_result_video_in_dir(folder)
         if not track_csv or not pred_csv.exists():
             return None
         dataset_value = value or folder.name
@@ -161,7 +163,7 @@ class ClassPipelineTaskManager:
             "value": dataset_value,
             "label": label or ("sample" if folder == self.class_root / "sample" else folder.name),
             "path": str(folder),
-            "sourceName": input_video.name if input_video else f"{dataset_value}.mp4",
+            "sourceName": input_video.name if input_video else (result_video.name if result_video else f"{dataset_value}.mp4"),
             "inputPath": str(input_video) if input_video else "",
             "resultPath": str(result_video) if result_video else "",
             "inputVideoUrl": f"/flask/class-preprocessed/{url_value}/input-video" if input_video else "",
@@ -259,12 +261,7 @@ class ClassPipelineTaskManager:
 
     def get_preprocessed_result_video_path(self, dataset):
         dataset_dir = self._resolve_preprocessed_dir(dataset)
-        source = self._first_existing(
-            dataset_dir / "result_h264.mp4",
-            dataset_dir / "videos" / "result_h264.mp4",
-            dataset_dir / "result.mp4",
-            dataset_dir / "videos" / "result.mp4",
-        )
+        source = self._find_result_video_in_dir(dataset_dir)
         if not source:
             return None
         target = dataset_dir / "result_demo_h264.mp4"
@@ -333,18 +330,27 @@ class ClassPipelineTaskManager:
 
             self._update(task, "running", "upload", 95, "正在准备浏览器播放地址")
             local_result_url = f"/flask/videoTasks/{task['taskId']}/result-video"
-            try:
-                task["uploadedResultVideoUrl"] = self._upload_result_video(task)
-            except requests.RequestException as exc:
-                task["resultUploadError"] = str(exc)
             task["resultVideoUrl"] = local_result_url
-            self._save_video_record(task)
-            self._save_warning_records(task)
+            self.socketio.start_background_task(self._persist_task_outputs, task_id)
 
             self._update(task, "done", "done", 100, "检测完成", completed=True)
         except Exception as exc:
             task["error"] = str(exc)
             self._update(task, "failed", "failed", task.get("progress") or 0, str(exc))
+
+    def _persist_task_outputs(self, task_id):
+        task = self.tasks.get(task_id)
+        if not task:
+            return
+        try:
+            try:
+                task["uploadedResultVideoUrl"] = self._upload_result_video(task)
+            except requests.RequestException as exc:
+                task["resultUploadError"] = str(exc)
+            self._save_video_record(task)
+            self._save_warning_records(task)
+        except Exception as exc:
+            task["persistError"] = str(exc)
 
     def _update(self, task, status, step, progress, message, completed=False):
         task["status"] = status
@@ -408,6 +414,12 @@ class ClassPipelineTaskManager:
             if source_path:
                 shutil.copyfile(source_path, input_path)
                 return
+            cached_video = self._resolve_preprocessed_result_video(task.get("preprocessedDataset"))
+            if cached_video:
+                task["inputVideoUrl"] = ""
+                task["inputPathMissing"] = True
+                return
+            raise FileNotFoundError(f"precomputed input/result video not found for dataset: {task.get('preprocessedDataset')}")
 
         if not input_url or str(input_url) in {"class_sample", "sample", "demo_sample"}:
             source_path = self.class_root / "sample" / "input.mp4"
@@ -450,18 +462,19 @@ class ClassPipelineTaskManager:
         if keypoints_csv:
             shutil.copyfile(keypoints_csv, keypoints_dir / "keypoints.csv")
         shutil.copyfile(pred_csv, task_dir / "predictions.csv")
-        self._ensure_browser_video(Path(task["inputPath"]), Path(task["inputPlayablePath"]))
-        task["videoInfo"] = self._read_video_info(task["inputPlayablePath"])
-        self._update(task, "running", "csv", 35, "预处理 CSV 已加载，正在准备带标注视频")
-
         result_video = Path(task["resultVideoPath"])
-        cached_video = self._first_existing(
-            dataset_dir / "result_h264.mp4",
-            dataset_dir / "videos" / "result_h264.mp4",
-            dataset_dir / "result.mp4",
-            dataset_dir / "videos" / "result.mp4",
-        )
-        if task.get("reuseResultVideo") and cached_video:
+        cached_video = self._find_result_video_in_dir(dataset_dir)
+        input_path = Path(task.get("inputPath") or "")
+        if input_path.exists():
+            self._ensure_browser_video(input_path, Path(task["inputPlayablePath"]))
+            task["videoInfo"] = self._read_video_info(task["inputPlayablePath"])
+        elif cached_video:
+            task["inputVideoUrl"] = ""
+            task["videoInfo"] = self._read_video_info(cached_video)
+        else:
+            raise FileNotFoundError(f"precomputed input video not found for dataset: {task.get('preprocessedDataset')}")
+        self._update(task, "running", "csv", 35, "预处理 CSV 已加载，正在准备带标注视频")
+        if (task.get("reuseResultVideo") or task.get("inputPathMissing")) and cached_video:
             self._ensure_browser_video(cached_video, result_video)
             self._update(task, "running", "visualize", 85, "已复用预处理标注视频")
             return
@@ -549,6 +562,23 @@ class ClassPipelineTaskManager:
             if candidate and candidate.exists() and candidate.is_dir():
                 return candidate.resolve()
         raise FileNotFoundError(f"preprocessed dataset not found: {dataset}")
+
+    def _find_result_video_in_dir(self, folder):
+        folder = Path(folder)
+        return self._first_existing(
+            folder / "result_demo_h264.mp4",
+            folder / "result_h264.mp4",
+            folder / "videos" / "result_h264.mp4",
+            folder / "result.mp4",
+            folder / "videos" / "result.mp4",
+        )
+
+    def _resolve_preprocessed_result_video(self, dataset):
+        try:
+            dataset_dir = self._resolve_preprocessed_dir(dataset)
+        except FileNotFoundError:
+            return None
+        return self._find_result_video_in_dir(dataset_dir)
 
     def _resolve_preprocessed_input_video(self, dataset):
         name = Path(str(dataset or "sample")).name
@@ -1200,7 +1230,7 @@ class ClassPipelineTaskManager:
 
     def _upload_result_video(self, task):
         result_video = Path(task["resultVideoPath"])
-        upload_url = "http://localhost:9999/files/upload"
+        upload_url = f"{self.backend_base_url}/files/upload"
         with open(result_video, "rb") as file:
             files = {"file": (f"{task['taskId']}_result_h264.mp4", file, "video/mp4")}
             response = requests.post(upload_url, files=files, timeout=120)
@@ -1220,7 +1250,7 @@ class ClassPipelineTaskManager:
         }
         try:
             requests.post(
-                "http://localhost:9999/videoRecords",
+                f"{self.backend_base_url}/videoRecords",
                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                 headers={"Content-Type": "application/json; charset=utf-8"},
                 timeout=15,
@@ -1246,7 +1276,7 @@ class ClassPipelineTaskManager:
             }
             try:
                 requests.post(
-                    "http://localhost:9999/warningRecords",
+                    f"{self.backend_base_url}/warningRecords",
                     data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                     headers={"Content-Type": "application/json; charset=utf-8"},
                     timeout=15,
@@ -1264,7 +1294,7 @@ class ClassPipelineTaskManager:
         }
         try:
             response = requests.post(
-                "http://localhost:9999/warningRecords/advice",
+                f"{self.backend_base_url}/warningRecords/advice",
                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                 headers={"Content-Type": "application/json; charset=utf-8"},
                 timeout=30,
@@ -1272,7 +1302,13 @@ class ClassPipelineTaskManager:
             if response.status_code == 200:
                 data = response.json()
                 if str(data.get("code")) == "0" and data.get("data"):
-                    return data["data"]
+                    advice_data = data["data"]
+                    if isinstance(advice_data, dict):
+                        advice = advice_data.get("advice")
+                        if advice:
+                            return advice
+                    else:
+                        return advice_data
         except Exception:
             pass
         return "建议教师结合课堂情境观察学生状态，课后以非诊断式方式进行简短沟通，了解是否存在疲劳、注意力波动或学习困难，并视情况调整座位、提问节奏或课堂互动。"

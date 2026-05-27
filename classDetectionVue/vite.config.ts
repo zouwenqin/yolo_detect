@@ -15,6 +15,8 @@ const alias: Record<string, string> = {
 const viteConfig = defineConfig((mode: ConfigEnv) => {
 	const env = loadEnv(mode.mode, __dirname);
 	const publicPath = env.VITE_PUBLIC_PATH?.trim() || '/';
+	const apiProxyTarget = env.VITE_API_PROXY_TARGET?.trim() || 'http://localhost:9999/';
+	const flaskProxyTarget = env.VITE_FLASK_PROXY_TARGET?.trim() || 'http://localhost:5000/';
 	return {
 		plugins: [vue(), vueSetupExtend()],
 		root: __dirname,
@@ -31,14 +33,14 @@ const viteConfig = defineConfig((mode: ConfigEnv) => {
 			proxy: {
 				'/api': {
 					//设置拦截器  拦截器格式   斜杠+拦截器名字，名字可以自己定
-					target: 'http://localhost:9999/', //代理的目标地址
+					target: apiProxyTarget,
 					ws: true,
 					changeOrigin: true,
 					rewrite: (path) => path.replace(/^\/api/, ''),
 				},
 				'/flask': {
 					//设置拦截器  拦截器格式   斜杠+拦截器名字，名字可以自己定
-					target: 'http://localhost:5000/', //代理的目标地址
+					target: flaskProxyTarget,
 					ws: true,
 					changeOrigin: true,
 					rewrite: (path) => path.replace(/^\/flask/, ''),

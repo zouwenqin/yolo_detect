@@ -1,6 +1,7 @@
 package com.example.Kcsj.controller;
 
 import cn.hutool.core.util.StrUtil;
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -15,11 +16,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 
 import javax.annotation.Resource;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -27,22 +30,29 @@ import java.util.List;
 @RequestMapping("/warningRecords")
 public class WarningRecordsController {
     private static final Logger log = LoggerFactory.getLogger(WarningRecordsController.class);
-    private static final String DEFAULT_LLM_API_URL = "https://api.minimaxi.com/v1/text/chatcompletion_v2";
-    private static final String DEFAULT_LLM_MODEL = "MiniMax-M2.7";
+    private static final String DEFAULT_LLM_API_URL = "https://api.minimax.com/v1/text/chatcompletion_v2";
+    private static final String DEFAULT_LLM_MODEL = "MiniMax-M2.7-highspeed";
 
     @Resource
     WarningRecordsMapper warningRecordsMapper;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate = createRestTemplate();
 
-    @Value("${llm.api-key:${minimax.api-key:${minmax.api-key:${MINIMAX_API_KEY:}}}}")
+    @Value("${llm.api-key:${deepseek.api-key:${DEEPSEEK_API_KEY:${minimax.api-key:${minmax.api-key:${MINIMAX_API_KEY:}}}}}}")
     private String llmApiKey;
 
-    @Value("${llm.api-url:${minimax.api-url:${minmax.api-url:https://api.minimaxi.com/v1/text/chatcompletion_v2}}}")
+    @Value("${llm.api-url:${deepseek.api-url:${DEEPSEEK_API_URL:${minimax.api-url:${minmax.api-url:https://api.minimax.com/v1/text/chatcompletion_v2}}}}}")
     private String llmApiUrl;
 
-    @Value("${llm.model:${minimax.model:${minmax.model:MiniMax-M2.7}}}")
+    @Value("${llm.model:${deepseek.model:${DEEPSEEK_MODEL:${minimax.model:${minmax.model:MiniMax-M2.7-highspeed}}}}}")
     private String llmModel;
+
+    private RestTemplate createRestTemplate() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(8000);
+        factory.setReadTimeout(30000);
+        return new RestTemplate(factory);
+    }
 
     public static class WarningAdviceRequest {
         private String riskLevel;
@@ -157,6 +167,8 @@ public class WarningRecordsController {
         private boolean fallback;
         private boolean configured;
         private String message;
+        private List<AdviceCard> possibleReasons;
+        private List<AdviceCard> guidanceCards;
 
         public WarningAdviceResponse() {
         }
@@ -226,6 +238,51 @@ public class WarningRecordsController {
         public void setMessage(String message) {
             this.message = message;
         }
+
+        public List<AdviceCard> getPossibleReasons() {
+            return possibleReasons;
+        }
+
+        public void setPossibleReasons(List<AdviceCard> possibleReasons) {
+            this.possibleReasons = possibleReasons;
+        }
+
+        public List<AdviceCard> getGuidanceCards() {
+            return guidanceCards;
+        }
+
+        public void setGuidanceCards(List<AdviceCard> guidanceCards) {
+            this.guidanceCards = guidanceCards;
+        }
+    }
+
+    public static class AdviceCard {
+        private String title;
+        private String desc;
+
+        public AdviceCard() {
+        }
+
+        public AdviceCard(String title, String desc) {
+            this.title = title;
+            this.desc = desc;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public void setTitle(String title) {
+            this.title = title;
+        }
+
+        public String getDesc() {
+            return desc;
+        }
+
+        public void setDesc(String desc) {
+            this.desc = desc;
+        }
     }
 
     @GetMapping("/all")
@@ -289,10 +346,10 @@ public class WarningRecordsController {
 
     @PostMapping("/advice")
     public Result<?> advice(@RequestBody WarningAdviceRequest request) {
-        String fallback = StrUtil.isNotBlank(request.getQuestion()) ? buildFallbackChatAnswer(request) : buildFallbackAdvice(request);
         String model = normalizeModel();
-        if (llmApiKey == null || llmApiKey.trim().isEmpty()) {
-            return Result.success(new WarningAdviceResponse(fallback, model, "local_fallback", true, false, "未配置 MiniMax API-Key，已使用本地兜底建议。"));
+        String apiKey = normalizeApiKey();
+        if (StrUtil.isBlank(apiKey)) {
+            return Result.error("AI_CONFIG_MISSING", "未配置大模型 API-Key，未生成建议。请检查 LLM_API_KEY、MINIMAX_API_KEY 或 DEEPSEEK_API_KEY。");
         }
 
         try {
@@ -301,23 +358,27 @@ public class WarningRecordsController {
             JSONObject payload = new JSONObject();
             payload.put("model", model);
             payload.put("temperature", 0.3);
-            payload.put("max_tokens", StrUtil.isNotBlank(request.getQuestion()) ? 700 : 450);
+            payload.put("max_tokens", StrUtil.isNotBlank(request.getQuestion()) ? 500 : 700);
             JSONArray messages = buildMessages(request);
             payload.put("messages", messages);
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.setBearerAuth(llmApiKey.trim());
+            headers.setBearerAuth(apiKey);
             HttpEntity<String> requestEntity = new HttpEntity<>(payload.toJSONString(), headers);
             String response = restTemplate.postForObject(apiUrl, requestEntity, String.class);
             String content = extractAssistantContent(response);
             if (StrUtil.isBlank(content)) {
-                return Result.success(new WarningAdviceResponse(fallback, model, "local_fallback", true, true, "MiniMax 返回内容为空，已使用本地兜底建议。"));
+                String modelError = extractModelError(response);
+                if (StrUtil.isNotBlank(modelError)) {
+                    return Result.error("AI_EMPTY_RESPONSE", "大模型接口未返回建议：" + modelError);
+                }
+                return Result.error("AI_EMPTY_RESPONSE", "大模型返回内容为空，未生成建议。请检查模型名、API 地址和账号权限。");
             }
-            return Result.success(new WarningAdviceResponse(content.trim(), model, "minimax", false, true, "MiniMax 接口已返回建议。"));
+            return Result.success(parseAdviceResponse(content.trim(), request, model));
         } catch (Exception e) {
-            log.warn("MiniMax advice request failed: {}", e.getMessage());
-            return Result.success(new WarningAdviceResponse(fallback, model, "local_fallback", true, true, "MiniMax 请求失败，已使用本地兜底建议。"));
+            log.warn("LLM advice request failed: {}", e.getMessage());
+            return Result.error("AI_REQUEST_FAILED", "大模型请求失败，未生成建议：" + safeErrorMessage(e));
         }
     }
 
@@ -327,21 +388,65 @@ public class WarningRecordsController {
         status.put("provider", "minmax");
         status.put("model", normalizeModel());
         status.put("apiUrl", normalizeApiUrl());
-        status.put("configured", StrUtil.isNotBlank(llmApiKey));
+        status.put("configured", StrUtil.isNotBlank(normalizeApiKey()));
+        status.put("apiKeySource", apiKeySource());
         return Result.success(status);
     }
 
+    private String normalizeApiKey() {
+        return firstNonBlank(
+                llmApiKey,
+                System.getenv("LLM_API_KEY"),
+                System.getenv("MINIMAX_API_KEY"),
+                System.getenv("MINIMAX_CN_API_KEY"),
+                System.getenv("MINMAX_API_KEY"),
+                System.getenv("DEEPSEEK_API_KEY")
+        );
+    }
+
     private String normalizeApiUrl() {
-        return StrUtil.isBlank(llmApiUrl) ? DEFAULT_LLM_API_URL : llmApiUrl.trim();
+        return firstNonBlank(
+                llmApiUrl,
+                System.getenv("LLM_API_URL"),
+                System.getenv("MINIMAX_API_URL"),
+                System.getenv("MINMAX_API_URL"),
+                System.getenv("DEEPSEEK_API_URL"),
+                DEFAULT_LLM_API_URL
+        );
     }
 
     private String normalizeModel() {
-        return StrUtil.isBlank(llmModel) ? DEFAULT_LLM_MODEL : llmModel.trim();
+        return firstNonBlank(
+                llmModel,
+                System.getenv("LLM_MODEL"),
+                System.getenv("MINIMAX_MODEL"),
+                System.getenv("MINMAX_MODEL"),
+                System.getenv("DEEPSEEK_MODEL"),
+                DEFAULT_LLM_MODEL
+        );
+    }
+
+    private String apiKeySource() {
+        if (StrUtil.isNotBlank(llmApiKey)) return "spring_property";
+        if (StrUtil.isNotBlank(System.getenv("LLM_API_KEY"))) return "LLM_API_KEY";
+        if (StrUtil.isNotBlank(System.getenv("MINIMAX_API_KEY"))) return "MINIMAX_API_KEY";
+        if (StrUtil.isNotBlank(System.getenv("MINIMAX_CN_API_KEY"))) return "MINIMAX_CN_API_KEY";
+        if (StrUtil.isNotBlank(System.getenv("MINMAX_API_KEY"))) return "MINMAX_API_KEY";
+        if (StrUtil.isNotBlank(System.getenv("DEEPSEEK_API_KEY"))) return "DEEPSEEK_API_KEY";
+        return "";
+    }
+
+    private String safeErrorMessage(Exception e) {
+        String message = e == null ? "" : String.valueOf(e.getMessage());
+        if (message.length() > 180) {
+            message = message.substring(0, 180) + "...";
+        }
+        return message.replaceAll("(?i)(bearer\\s+)[^\\s,;]+", "$1***");
     }
 
     private JSONArray buildMessages(WarningAdviceRequest request) {
         JSONArray messages = new JSONArray();
-        messages.add(message("system", "你是课堂行为检测系统中的教师沟通助手。所有建议必须是非诊断式、温和、可执行的课堂关怀建议；不得做医学或心理诊断，不得给学生贴标签，不得建议公开点名批评。"));
+        messages.add(message("system", "你是课堂行为检测系统中的教师沟通助手。所有建议必须是非诊断式、温和、可执行的课堂关怀建议；不得做医学或心理诊断，不得给学生贴标签，不得建议公开点名批评。直接输出纯文本，不要使用 Markdown、星号加粗、表格或代码块。"));
         if (request.getMessages() != null) {
             for (ChatMessage item : request.getMessages()) {
                 if (item == null || StrUtil.isBlank(item.getContent())) {
@@ -369,11 +474,72 @@ public class WarningRecordsController {
             JSONObject first = choices.getJSONObject(0);
             JSONObject message = first.getJSONObject("message");
             if (message != null) {
-                return message.getString("content");
+                String messageText = firstNonBlank(message.getString("content"), message.getString("text"));
+                if (StrUtil.isNotBlank(messageText)) {
+                    return messageText;
+                }
             }
-            return first.getString("text");
+            String choiceText = firstNonBlank(first.getString("text"), first.getString("content"));
+            if (StrUtil.isNotBlank(choiceText)) {
+                return choiceText;
+            }
+            JSONArray messages = first.getJSONArray("messages");
+            if (messages != null && !messages.isEmpty()) {
+                for (int i = messages.size() - 1; i >= 0; i--) {
+                    JSONObject item = messages.getJSONObject(i);
+                    String itemText = firstNonBlank(item.getString("content"), item.getString("text"));
+                    if (StrUtil.isNotBlank(itemText)) {
+                        return itemText;
+                    }
+                }
+            }
         }
-        return json.getString("output_text");
+        JSONObject data = json.getJSONObject("data");
+        if (data != null) {
+            String dataText = firstNonBlank(data.getString("output_text"), data.getString("reply"), data.getString("text"), data.getString("content"));
+            if (StrUtil.isNotBlank(dataText)) {
+                return dataText;
+            }
+        }
+        return firstNonBlank(json.getString("output_text"), json.getString("reply"), json.getString("text"), json.getString("content"));
+    }
+
+    private String extractModelError(String response) {
+        if (StrUtil.isBlank(response)) {
+            return "";
+        }
+        try {
+            JSONObject json = JSONObject.parseObject(response);
+            JSONObject baseResp = json.getJSONObject("base_resp");
+            if (baseResp == null) {
+                baseResp = json.getJSONObject("base_response");
+            }
+            if (baseResp == null) {
+                baseResp = json.getJSONObject("baseResp");
+            }
+            if (baseResp != null) {
+                String code = firstNonBlank(baseResp.getString("status_code"), baseResp.getString("code"), baseResp.getString("err_code"));
+                String message = firstNonBlank(baseResp.getString("status_msg"), baseResp.getString("message"), baseResp.getString("msg"), baseResp.getString("error_msg"));
+                if (StrUtil.isNotBlank(message) && (StrUtil.isBlank(code) || !"0".equals(code))) {
+                    return codeMessage(code, message);
+                }
+            }
+            String topMessage = firstNonBlank(json.getString("error_msg"), json.getString("message"), json.getString("msg"), json.getString("error"));
+            String topCode = firstNonBlank(json.getString("code"), json.getString("status_code"), json.getString("err_code"));
+            if (StrUtil.isNotBlank(topMessage)) {
+                return codeMessage(topCode, topMessage);
+            }
+        } catch (Exception e) {
+            log.warn("LLM error response parse failed: {}", e.getMessage());
+        }
+        return "";
+    }
+
+    private String codeMessage(String code, String message) {
+        if (StrUtil.isBlank(code)) {
+            return message;
+        }
+        return code + " - " + message;
     }
 
     private JSONObject message(String role, String content) {
@@ -381,6 +547,127 @@ public class WarningRecordsController {
         message.put("role", role);
         message.put("content", content);
         return message;
+    }
+
+    private WarningAdviceResponse parseAdviceResponse(String content, WarningAdviceRequest request, String model) {
+        if (StrUtil.isNotBlank(request.getQuestion())) {
+            return buildAdviceResponse(content, request, model, "llm_api", false, true, "大模型接口已返回追问回复。");
+        }
+        JSONObject json = parseJsonContent(content);
+        if (json == null) {
+            return buildModelTextResponse(content, request, model, "大模型接口已返回沟通建议。");
+        }
+        String advice = firstNonBlank(json.getString("advice"), json.getString("content"), json.getString("text"), content);
+        WarningAdviceResponse response = buildModelTextResponse(advice, request, model, "大模型接口已返回结构化建议。");
+        List<AdviceCard> reasons = parseCards(json.getJSONArray("possibleReasons"));
+        if (reasons.isEmpty()) reasons = parseCards(json.getJSONArray("reasonCards"));
+        if (!reasons.isEmpty()) response.setPossibleReasons(reasons);
+        List<AdviceCard> guidance = parseCards(json.getJSONArray("guidanceCards"));
+        if (!guidance.isEmpty()) response.setGuidanceCards(guidance);
+        return response;
+    }
+
+    private WarningAdviceResponse buildModelTextResponse(String advice, WarningAdviceRequest request, String model, String message) {
+        String normalized = normalizeAdviceText(advice);
+        WarningAdviceResponse response = buildAdviceResponse(normalized, request, model, "llm_api", false, true, message);
+        response.setGuidanceCards(buildGuidanceCardsFromAdvice(normalized));
+        return response;
+    }
+
+    private JSONObject parseJsonContent(String content) {
+        if (StrUtil.isBlank(content)) {
+            return null;
+        }
+        String text = unwrapJsonText(content.trim());
+        JSONObject json = tryParseJsonObject(text);
+        if (json != null) {
+            return json;
+        }
+        Object parsed = tryParseJsonValue(text);
+        if (parsed instanceof String) {
+            return tryParseJsonObject(unwrapJsonText(((String) parsed).trim()));
+        }
+        return null;
+    }
+
+    private String unwrapJsonText(String text) {
+        if (text.startsWith("```")) {
+            text = text.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "").trim();
+        }
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            text = text.substring(start, end + 1);
+        }
+        return text;
+    }
+
+    private JSONObject tryParseJsonObject(String text) {
+        try {
+            return JSONObject.parseObject(text);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Object tryParseJsonValue(String text) {
+        try {
+            return JSON.parse(text);
+        } catch (Exception e) {
+            log.warn("LLM advice response is not JSON: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private List<AdviceCard> parseCards(JSONArray array) {
+        List<AdviceCard> cards = new ArrayList<>();
+        if (array == null) {
+            return cards;
+        }
+        for (int i = 0; i < array.size(); i++) {
+            Object raw = array.get(i);
+            if (!(raw instanceof JSONObject)) {
+                continue;
+            }
+            JSONObject item = (JSONObject) raw;
+            String title = firstNonBlank(item.getString("title"), item.getString("name"), "");
+            String desc = firstNonBlank(item.getString("desc"), item.getString("description"), item.getString("content"), "");
+            if (StrUtil.isNotBlank(title) && StrUtil.isNotBlank(desc)) {
+                cards.add(new AdviceCard(title, desc));
+            }
+        }
+        return cards;
+    }
+
+    private WarningAdviceResponse buildAdviceResponse(String advice, WarningAdviceRequest request, String model, String source, boolean fallback, boolean configured, String message) {
+        WarningAdviceResponse response = new WarningAdviceResponse(advice, model, source, fallback, configured, message);
+        return response;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (StrUtil.isNotBlank(value)) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
+    private String normalizeAdviceText(String advice) {
+        if (StrUtil.isBlank(advice)) {
+            return "";
+        }
+        String text = advice.trim();
+        JSONObject json = parseJsonContent(text);
+        if (json != null) {
+            text = firstNonBlank(json.getString("advice"), json.getString("content"), json.getString("text"), text);
+        }
+        text = text.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n");
+        text = text.replace("\\n", "\n").replace("\\\"", "\"");
+        return text.trim();
     }
 
     private String buildAdvicePrompt(WarningAdviceRequest request) {
@@ -393,41 +680,45 @@ public class WarningRecordsController {
                 + "异常行为：" + behavior + "\n"
                 + "持续时长：" + String.format("%.1f", seconds) + "秒\n"
                 + "触发原因：" + (request.getReason() == null ? "" : request.getReason()) + "\n"
-                + "请生成教师沟通建议，必须遵守：1. 非诊断式表达；2. 不给学生贴标签；3. 给出温和开场话术、追问方向、避免说法和后续跟进建议。";
+                + "请直接生成教师沟通建议，不要返回 JSON，不要使用 Markdown、星号加粗或表格。"
+                + "按四行输出，每行以普通中文标题开头：温和开场、追问方向、避免说法、后续跟进。"
+                + "总字数控制在 180 到 260 个中文字符，表达必须非诊断、温和、可执行。";
     }
 
-    private String buildFallbackAdvice(WarningAdviceRequest request) {
-        String behavior = displayBehavior(request.getBehaviorType());
-        String risk = displayRisk(request.getRiskLevel());
-        return "当前识别到" + risk + "信号：" + behavior + "。建议教师先以非公开、低压力方式观察学生状态；课后可用“我注意到你这节课有一段时间状态不太舒服，是不是最近睡眠、课程压力或身体情况有点影响？”作为开场。沟通时避免直接说“你有问题”或公开点名；若该行为反复出现、学生明显情绪低落或影响学习任务，建议同步班主任、辅导员或心理老师做人工复核与持续跟进。";
+    private List<AdviceCard> buildGuidanceCardsFromAdvice(String advice) {
+        List<AdviceCard> cards = new ArrayList<>();
+        addAdviceCardIfPresent(cards, advice, "开场", "建议开场");
+        addAdviceCardIfPresent(cards, advice, "追问", "追问方向");
+        addAdviceCardIfPresent(cards, advice, "避免", "避免说法");
+        addAdviceCardIfPresent(cards, advice, "跟进", "后续跟进");
+        return cards;
+    }
+
+    private void addAdviceCardIfPresent(List<AdviceCard> cards, String advice, String keyword, String title) {
+        String line = pickAdviceLine(advice, keyword);
+        if (StrUtil.isNotBlank(line)) {
+            cards.add(new AdviceCard(title, line));
+        }
+    }
+
+    private String pickAdviceLine(String advice, String keyword) {
+        if (StrUtil.isBlank(advice)) {
+            return "";
+        }
+        String[] lines = advice.split("\\r?\\n|；|。");
+        for (String line : lines) {
+            String text = line.replaceAll("^[-\\d.、\\s]+", "").trim();
+            if (text.contains(keyword) && text.length() >= 6) {
+                return text.length() > 42 ? text.substring(0, 42) + "..." : text;
+            }
+        }
+        return "";
     }
 
     private String buildChatPrompt(WarningAdviceRequest request) {
         return buildAdvicePrompt(request)
                 + "\n\n教师继续追问：" + request.getQuestion()
                 + "\n请基于前文异常线索直接回答这个追问，保持非诊断、尊重学生隐私、可执行。";
-    }
-
-    private String buildFallbackChatAnswer(WarningAdviceRequest request) {
-        String behavior = displayBehavior(request.getBehaviorType());
-        String question = request.getQuestion() == null ? "" : request.getQuestion().trim();
-        String normalized = question.toLowerCase();
-        if (question.contains("否认") || question.contains("不承认")) {
-            return "如果学生否认" + behavior + "或不愿多说，建议教师先接住他的感受，不争辩、不追问细节。可以说：“没关系，我不是要批评你，只是想确认你最近状态还好吗。如果你之后愿意聊，可以随时找我。”之后继续观察一两次课堂状态，必要时记录并与班主任或辅导员做非诊断式沟通。";
-        }
-        if (question.contains("辅导员") || question.contains("班主任") || question.contains("心理")) {
-            return "建议在高风险、反复出现或学生表达明显压力时同步辅导员/班主任。同步时只描述课堂观察事实，例如“某节课出现较长时间" + behavior + "，持续时间较长”，不要推断心理疾病，也不要扩大传播范围。";
-        }
-        if (question.contains("家长")) {
-            return "不建议一开始就直接联系家长。可以先由任课教师做一次温和沟通；若学生状态持续异常、影响学习生活，或涉及安全风险，再按学校流程由班主任/辅导员评估是否联系家长。";
-        }
-        if (question.contains("自尊") || question.contains("伤害") || question.contains("尴尬")) {
-            return "保护学生自尊的关键是私下、具体、非评价。不要说“你怎么又这样”，可以说“我注意到你今天有一段时间状态比较低，我想确认你是不是太累或哪里不舒服”。沟通地点尽量选择课后走廊、办公室门口等低压力场景。";
-        }
-        if (question.contains("开口") || question.contains("怎么说") || question.contains("话术") || normalized.contains("how")) {
-            return "可以这样开口：“刚才课堂上我注意到你有一段时间状态不太好，我不是要批评你，只是想了解一下是不是最近睡眠、身体或课程压力影响到了你。有什么我能帮你调整的吗？”后续追问围绕睡眠、身体、课程难度和近期情绪，不做诊断。";
-        }
-        return "关于“" + question + "”，建议仍围绕" + behavior + "这一课堂观察事实来沟通：先表达关心，再询问可能原因，最后约定一个可执行的小跟进，例如下节课观察状态、调整座位或必要时请班主任协助。";
     }
 
     private String displayRisk(String riskLevel) {

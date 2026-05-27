@@ -109,7 +109,7 @@ const getTableData = () => {
 };
 
 const show = (row: any) => {
-	window.open('http://localhost:8888/#/videoShow?id=' + row.id);
+	window.open(`${window.location.origin}/#/videoShow?id=${row.id}`);
 };
 
 const onRowDel = (row: any) => {

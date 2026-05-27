@@ -42,10 +42,6 @@
 							<el-icon><FolderOpened /></el-icon>
 							视频素材
 						</el-button>
-						<el-button @click="router.push('/interventionReport')">
-							<el-icon><Document /></el-icon>
-							检测报告
-						</el-button>
 						<el-button @click="router.push('/demoSettings')">
 							<el-icon><Setting /></el-icon>
 							系统设置
@@ -72,7 +68,6 @@ import {
 	FolderOpened,
 	PieChart,
 	Setting,
-	Tickets,
 	TrendCharts,
 	VideoCameraFilled,
 } from '@element-plus/icons-vue';
@@ -94,7 +89,6 @@ const menus = [
 	{ key: 'result', label: '检测结果', path: '/detectionResult', icon: markRaw(DocumentChecked) },
 	{ key: 'stats', label: '行为统计', path: '/behaviorStats', icon: markRaw(PieChart) },
 	{ key: 'ai', label: 'AI 辅助干预', path: '/aiIntervention', icon: markRaw(ChatDotRound) },
-	{ key: 'report', label: '干预报告', path: '/interventionReport', icon: markRaw(Tickets) },
 	{ key: 'history', label: '检测历史', path: '/detectionHistory', icon: markRaw(Document) },
 	{ key: 'settings', label: '功能设置', path: '/demoSettings', icon: markRaw(Setting) },
 ];

@@ -6,7 +6,7 @@
 					v-model="state.form.avatar"
 					ref="uploadFile"
 					class="avatar-uploader"
-					action="http://localhost:9999/files/upload"
+					action="/api/files/upload"
 					:show-file-list="false"
 					:on-success="handleAvatarSuccessone"
 				>

@@ -85,10 +85,11 @@ export const dynamicRoutes: Array<RouteRecordRaw> = [
 			{
 				path: '/interventionReport',
 				name: 'interventionReport',
-				component: () => import('/@/views/demo/interventionReport/index.vue'),
+				redirect: '/detectionResult',
 				meta: {
 					...commonMeta,
-					title: '干预报告',
+					isHide: true,
+					title: '检测结果',
 					icon: 'iconfont icon-baobiao',
 				},
 			},

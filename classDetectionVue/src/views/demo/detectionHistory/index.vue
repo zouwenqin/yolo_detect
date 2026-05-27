@@ -68,7 +68,7 @@
 import { onMounted, reactive } from 'vue';
 import { ElMessage } from 'element-plus';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
-import { demoState, syncWarningRecords } from '/@/views/demo/demoState';
+import { clearDemoDetectionState, demoState, syncWarningRecords } from '/@/views/demo/demoState';
 import request from '/@/utils/request';
 
 const state = reactive({
@@ -76,6 +76,7 @@ const state = reactive({
 	records: [] as any[],
 	warnings: [] as any[],
 	total: 0,
+	hasAnyRecord: false,
 	query: {
 		search: '',
 		search2: '',
@@ -146,6 +147,11 @@ async function loadWarnings() {
 	try {
 		const res = await request.get('/api/warningRecords/all');
 		if (res?.code == 0 && Array.isArray(res.data)) {
+			if (!state.hasAnyRecord) {
+				state.warnings = [];
+				clearDemoDetectionState();
+				return;
+			}
 			state.warnings = res.data;
 			syncWarningRecords(res.data);
 		}
@@ -159,6 +165,7 @@ async function loadRecords() {
 	try {
 		const res = await request.get('/api/videoRecords/all');
 		if (res?.code == 0 && Array.isArray(res.data)) {
+			state.hasAnyRecord = res.data.length > 0;
 			const filtered = applyQuery(uniqueLatestRecords(res.data));
 			state.total = filtered.length;
 			const maxPage = Math.max(1, Math.ceil(state.total / state.query.pageSize));
@@ -168,11 +175,15 @@ async function loadRecords() {
 		} else {
 			state.records = [];
 			state.total = 0;
+			state.hasAnyRecord = false;
+			clearDemoDetectionState();
 			ElMessage.error(res?.msg || '检测历史加载失败');
 		}
 	} catch (error) {
 		state.records = [];
 		state.total = 0;
+		state.hasAnyRecord = false;
+		clearDemoDetectionState();
 		ElMessage.warning('后端未启动或检测历史接口不可用');
 	} finally {
 		state.loading = false;
@@ -193,7 +204,7 @@ function resetQuery() {
 
 function openPlayback(row: any) {
 	if (!row?.id) return;
-	window.open(`http://localhost:8888/#/videoShow?id=${row.id}`);
+	window.open(`${window.location.origin}/#/videoShow?id=${row.id}`);
 }
 
 function useAsCurrent(row: any) {
@@ -218,6 +229,26 @@ async function resolveDeleteIds(row: any) {
 	return fallbackIds;
 }
 
+function warningMatchesRecord(warning: any, row: any) {
+	const warningSource = sourceName(warning?.videoSource || warning?.sourceName || warning?.fileName || '').toLowerCase();
+	const rowSource = sourceName(row?.inputVideo || row?.sourceName || row?.fileName || '').toLowerCase();
+	return Boolean(warningSource && rowSource && (warningSource === rowSource || warningSource.includes(rowSource) || rowSource.includes(warningSource)));
+}
+
+async function deleteRelatedWarnings(row: any) {
+	const matchedWarnings = state.warnings.filter((warning) => warningMatchesRecord(warning, row) && warning?.id);
+	for (const warning of matchedWarnings) {
+		const res = await request.delete(`/api/warningRecords/${warning.id}`);
+		if (res?.code != 0) {
+			throw new Error(res?.msg || `Warning record ${warning.id} delete failed`);
+		}
+	}
+	if (matchedWarnings.length) {
+		const deletedIds = new Set(matchedWarnings.map((warning) => warning.id));
+		state.warnings = state.warnings.filter((warning) => !deletedIds.has(warning.id));
+	}
+}
+
 async function deleteRecord(row: any) {
 	if (!row?.id) return;
 	state.loading = true;
@@ -229,11 +260,13 @@ async function deleteRecord(row: any) {
 				throw new Error(res?.msg || `记录 ${id} 删除失败`);
 			}
 		}
+		await deleteRelatedWarnings(row);
 		ElMessage.success('删除成功，原视频素材已保留');
 		const deletedKey = recordKey(row);
 		state.records = state.records.filter((item) => recordKey(item) !== deletedKey);
 		state.total = Math.max(0, state.total - 1);
 		await loadRecords();
+		await loadWarnings();
 	} catch (error: any) {
 		ElMessage.error(error?.message || '删除失败，请确认后端服务是否已启动');
 	} finally {
@@ -242,7 +275,8 @@ async function deleteRecord(row: any) {
 }
 
 onMounted(async () => {
-	await Promise.all([loadWarnings(), loadRecords()]);
+	await loadRecords();
+	await loadWarnings();
 });
 </script>
 

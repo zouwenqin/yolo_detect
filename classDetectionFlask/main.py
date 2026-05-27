@@ -120,6 +120,7 @@ class VideoProcessingApp:
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")  # 初始化 SocketIO
         self.host = host
         self.port = port
+        self.backend_base_url = os.environ.get("BACKEND_BASE_URL", "http://localhost:9999").rstrip("/")
         self.setup_routes()
         self.data = {}  # 存储接收参数
         self.paths = {
@@ -216,7 +217,7 @@ class VideoProcessingApp:
     调用 predictImg.ImagePredictor 类（外部依赖）加载模型。
     执行推理，生成标注后的图片。
     输出：
-    将结果图片上传至远程服务器（http://localhost:9999/files/upload）。
+    将结果图片上传至后端文件服务。
     返回包含图片 URL、识别标签、置信度、耗时等信息的 JSON 响应。
     '''
     def predictImg(self):
@@ -388,7 +389,7 @@ class VideoProcessingApp:
                     self.socketio.emit('progress', {'data': progress})
                 uploadedUrl = self.upload(self.paths['output'])
                 self.data["outVideo"] = uploadedUrl
-                self.save_data(json.dumps(self.data), 'http://localhost:9999/videoRecords')
+                self.save_data(json.dumps(self.data), f'{self.backend_base_url}/videoRecords')
                 self.cleanup_files([self.paths['download'], self.paths['output'], self.paths['video_output']])
 
         return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -453,7 +454,7 @@ class VideoProcessingApp:
                 uploadedUrl = self.upload(self.paths['output'])
                 self.data["outVideo"] = uploadedUrl
                 print(self.data)
-                self.save_data(json.dumps(self.data), 'http://localhost:9999/cameraRecords')
+                self.save_data(json.dumps(self.data), f'{self.backend_base_url}/cameraRecords')
                 self.cleanup_files([self.paths['download'], self.paths['output'], self.paths['camera_output']])
 
         return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -501,7 +502,7 @@ class VideoProcessingApp:
         }
         try:
             requests.post(
-                "http://localhost:9999/warningRecords",
+                f"{self.backend_base_url}/warningRecords",
                 data=json.dumps(warning_record, ensure_ascii=False),
                 headers={'Content-Type': 'application/json'},
                 timeout=15
@@ -521,7 +522,7 @@ class VideoProcessingApp:
         }
         try:
             response = requests.post(
-                "http://localhost:9999/warningRecords/advice",
+                f"{self.backend_base_url}/warningRecords/advice",
                 data=json.dumps(payload, ensure_ascii=False),
                 headers={'Content-Type': 'application/json'},
                 timeout=30
@@ -529,7 +530,10 @@ class VideoProcessingApp:
             if response.status_code == 200:
                 result = response.json()
                 if str(result.get("code")) == "0" and result.get("data"):
-                    return result.get("data")
+                    data = result.get("data")
+                    if isinstance(data, dict):
+                        return data.get("advice") or self.fallback_warning_advice(warning)
+                    return data
         except Exception as e:
             print(f"生成干预建议失败: {str(e)}")
         return self.fallback_warning_advice(warning)
@@ -592,7 +596,7 @@ class VideoProcessingApp:
 
     def upload(self, out_path):
         """上传处理后的图片或视频文件到远程服务器"""
-        upload_url = "http://localhost:9999/files/upload"
+        upload_url = f"{self.backend_base_url}/files/upload"
         try:
             with open(out_path, 'rb') as file:
                 files = {'file': (os.path.basename(out_path), file)}

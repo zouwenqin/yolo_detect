@@ -258,7 +258,7 @@ const start = () => {
 	console.log(state.form);
 	const queryParams = new URLSearchParams(state.form).toString();
 	state.cameraisShow = true
-	state.video_path = `http://127.0.0.1:5000/predictCamera?${queryParams}`;
+	state.video_path = `/flask/predictCamera?${queryParams}`;
 };
 
 const stop = () => {

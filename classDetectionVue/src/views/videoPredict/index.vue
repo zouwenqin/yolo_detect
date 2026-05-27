@@ -13,9 +13,9 @@
 				<el-icon><PieChart /></el-icon>
 				行为统计
 			</el-button>
-			<el-button @click="router.push('/interventionReport')">
+			<el-button @click="router.push('/detectionResult')">
 				<el-icon><Document /></el-icon>
-				检测报告
+				检测结果
 			</el-button>
 			<el-button @click="router.push('/demoSettings')">
 				<el-icon><Setting /></el-icon>
@@ -53,7 +53,7 @@
 						<div class="video-actions">
 							<el-upload
 								ref="uploadRef"
-								action="http://localhost:9999/files/upload"
+								action="/api/files/upload"
 								:show-file-list="false"
 								:on-change="handleVideoChange"
 								:on-progress="handleVideoUploadProgress"
@@ -247,6 +247,7 @@ import {
 	applyProtocolPayload,
 	behaviorText,
 	buildPrompt,
+	clearDemoDetectionState,
 	currentEvent,
 	demoState,
 	exportReportText,
@@ -277,9 +278,9 @@ const weight = ref(demoState.settings.model);
 const kindItems = ref([{ value: 'class', label: '课堂学生行为检测' }]);
 const weightItems = ref([{ value: 'yolo_best.pt', label: 'yolo_best.pt' }]);
 const lstmWeight = ref('best_lstm.pth');
-const preprocessedDataset = ref('sample');
-const preprocessedItems = ref<any[]>([{ value: 'sample', label: 'sample', inputVideoUrl: '/flask/sample-video', sourceName: 'input.mp4' }]);
-const previewUrl = ref('/flask/sample-video');
+const preprocessedDataset = ref('');
+const preprocessedItems = ref<any[]>([]);
+const previewUrl = ref('');
 const resultVideoUrl = ref('');
 const resultVideoRef = ref<HTMLVideoElement>();
 const previewVideoState = ref({ loading: false, error: '', label: '正在加载原始视频' });
@@ -379,6 +380,10 @@ function reloadVideo(slot: 'preview' | 'result') {
 
 function persistVideoPageState() {
 	try {
+		if (!demoState.hasLiveData && !currentTaskId.value && !resultVideoUrl.value && !previewUrl.value.startsWith('blob:')) {
+			sessionStorage.removeItem(videoPageStorageKey);
+			return;
+		}
 		sessionStorage.setItem(videoPageStorageKey, JSON.stringify({
 			previewUrl: previewUrl.value,
 			inputVideoUrl: previewUrl.value && !previewUrl.value.startsWith('blob:') ? previewUrl.value : '',
@@ -399,12 +404,25 @@ function persistVideoPageState() {
 	}
 }
 
+function isRestorableVideoState(state: any) {
+	if (!state || typeof state !== 'object') return false;
+	if (state.currentTaskId) return true;
+	if (state.resultVideoUrl) return true;
+	if (Number(state.progress || 0) > 0) return true;
+	if (Array.isArray(state.predictionWindows) && state.predictionWindows.length) return true;
+	if (Array.isArray(state.behaviorHeatmap) && state.behaviorHeatmap.length) return true;
+	return Boolean(state.previewUrl?.startsWith?.('blob:'));
+}
+
 function restoreVideoPageState() {
 	try {
 		const raw = sessionStorage.getItem(videoPageStorageKey);
 		if (!raw) return false;
 		const state = JSON.parse(raw);
-		if (!state || typeof state !== 'object') return false;
+		if (!isRestorableVideoState(state)) {
+			sessionStorage.removeItem(videoPageStorageKey);
+			return false;
+		}
 		if (state.preprocessedDataset) preprocessedDataset.value = state.preprocessedDataset;
 		if (Number(state.confidence)) conf.value = Number(state.confidence);
 		if (state.previewUrl) setPreviewVideoUrl(state.previewUrl);
@@ -420,7 +438,7 @@ function restoreVideoPageState() {
 		} else {
 			currentTaskId.value = '';
 			setResultVideoUrl('');
-			demoState.material.status = '素材已选择';
+			demoState.material.status = state.resultVideoUrl ? '检测完成' : '素材已选择';
 			demoState.material.progress = 0;
 			processProgressVisible.value = false;
 		}
@@ -441,6 +459,15 @@ function activePreprocessedItem() {
 	return preprocessedItems.value.find((item) => item.value === preprocessedDataset.value);
 }
 
+function preferredPreprocessedItem() {
+	const active = activePreprocessedItem();
+	if (active && active.value !== 'sample') return active;
+	return preprocessedItems.value.find((item) => item.value !== 'sample' && item.hasResultVideo)
+		|| preprocessedItems.value.find((item) => item.value !== 'sample')
+		|| active
+		|| preprocessedItems.value[0];
+}
+
 function videoStem(name: string) {
 	const baseName = String(name || '').split(/[\\/]/).pop() || '';
 	return baseName.replace(/\.[^.]+$/, '').toLowerCase();
@@ -456,7 +483,7 @@ function findPreprocessedItemByVideoName(name: string) {
 
 function applyPreprocessedItem(item: any, clearUpload = true) {
 	if (!item) return;
-	setPreviewVideoUrl(item.inputVideoUrl || '/flask/sample-video');
+	setPreviewVideoUrl(item.inputVideoUrl || '');
 	setResultVideoUrl('');
 	currentTaskId.value = '';
 	streamUrl.value = '';
@@ -474,6 +501,22 @@ function handlePreprocessedDatasetChange() {
 	const item = activePreprocessedItem();
 	if (!item) return;
 	applyPreprocessedItem(item, true);
+}
+
+function resetInitialVideoSelection() {
+	sessionStorage.removeItem(videoPageStorageKey);
+	preprocessedDataset.value = '';
+	setPreviewVideoUrl('');
+	setResultVideoUrl('');
+	currentTaskId.value = '';
+	streamUrl.value = '';
+	uploadProgressVisible.value = false;
+	processProgressVisible.value = false;
+	clearDemoDetectionState('待选择课堂视频素材');
+	demoState.material.status = '等待选择素材';
+	demoState.material.resolution = '-';
+	demoState.material.duration = '-';
+	demoState.material.fps = '-';
 }
 
 function chooseVideo() {
@@ -580,11 +623,22 @@ async function startDetect() {
 	if (matchedDatasetValue && matchedDatasetValue !== preprocessedDataset.value) {
 		preprocessedDataset.value = matchedDatasetValue;
 	}
-	const selectedDataset = activePreprocessedItem();
+	let selectedDataset = activePreprocessedItem();
+	if (!rawFile) {
+		const preferred = preferredPreprocessedItem();
+		if (preferred) {
+			selectedDataset = preferred;
+			preprocessedDataset.value = preferred.value;
+		}
+	}
+	if (!rawFile && !selectedDataset) {
+		ElMessage.warning('请先选择或上传课堂视频素材');
+		return;
+	}
 	const inputVideo = matchedDatasetValue
 		? (selectedDataset?.inputPath || selectedDataset?.value || matchedDatasetValue)
 		: (rawFile?.response?.data || rawFile?.uploadedPath || selectedDataset?.inputPath || preprocessedDataset.value || 'class_sample');
-	const sourceName = rawFile?.name || selectedDataset?.sourceName || demoState.material.sourceName || 'class/sample/input.mp4';
+	const sourceName = rawFile?.name || selectedDataset?.sourceName || demoState.material.sourceName || `${selectedDataset?.value || 'class-output'}.mp4`;
 	demoState.settings.confidence = conf.value;
 	demoState.settings.model = weight.value;
 	demoState.material.status = '检测中';
@@ -606,9 +660,9 @@ async function startDetect() {
 			weight: weight.value,
 			yoloModel: weight.value,
 			lstmModel: lstmWeight.value,
-			usePrecomputed: true,
-			reuseResultVideo: false,
-			preprocessedDataset: preprocessedDataset.value || 'sample',
+			usePrecomputed: Boolean(selectedDataset),
+			reuseResultVideo: true,
+			preprocessedDataset: selectedDataset?.value || preprocessedDataset.value || '',
 			yoloDevice: 'cpu',
 			rtmposeDevice: 'cpu',
 			lstmDevice: 'cpu',
@@ -749,21 +803,28 @@ function loadPreprocessedDatasetsV2() {
 				resultVideoUrl: item.resultVideoUrl,
 				hasResultVideo: item.hasResultVideo,
 			}));
-			const currentVideoName = (uploadRef.value as any)?.uploadFiles?.[0]?.name || demoState.material.sourceName;
-			const matchedItem = findPreprocessedItemByVideoName(currentVideoName);
-			if (matchedItem) {
-				preprocessedDataset.value = matchedItem.value;
-			} else if (!preprocessedItems.value.some((item) => item.value === preprocessedDataset.value)) {
-				preprocessedDataset.value = preprocessedItems.value[0].value;
+			const restored = restoreVideoPageState();
+			if (restored) {
+				const currentVideoName = (uploadRef.value as any)?.uploadFiles?.[0]?.name || demoState.material.sourceName;
+				const matchedItem = findPreprocessedItemByVideoName(currentVideoName);
+				if (matchedItem) preprocessedDataset.value = matchedItem.value;
+				return;
 			}
-			handlePreprocessedDatasetChange();
-			restoreVideoPageState();
+			const uploadFileName = (uploadRef.value as any)?.uploadFiles?.[0]?.name || '';
+			const matchedItem = findPreprocessedItemByVideoName(uploadFileName);
+			if (matchedItem && uploadFileName) {
+				preprocessedDataset.value = matchedItem.value;
+				applyPreprocessedItem(matchedItem, false);
+				return;
+			}
+			resetInitialVideoSelection();
+		} else {
+			preprocessedItems.value = [];
+			if (!restoreVideoPageState()) resetInitialVideoSelection();
 		}
 	}).catch(() => {
-		preprocessedItems.value = [{ value: 'sample', label: 'sample', inputVideoUrl: '/flask/sample-video', sourceName: 'input.mp4' }];
-		preprocessedDataset.value = 'sample';
-		handlePreprocessedDatasetChange();
-		restoreVideoPageState();
+		preprocessedItems.value = [];
+		if (!restoreVideoPageState()) resetInitialVideoSelection();
 	});
 }
 

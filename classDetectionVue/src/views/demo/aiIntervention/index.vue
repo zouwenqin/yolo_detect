@@ -46,47 +46,42 @@
 			<section class="panel judgement-panel">
 				<div class="section-title compact">
 					<h3>可能原因研判</h3>
-					<p>仅提供沟通方向，所有原因都需要教师课后与学生确认。</p>
+					<p>{{ reasonPanelHint }}</p>
 				</div>
-				<div class="reason-grid">
+				<div v-if="reasonCards.length" class="reason-grid">
 					<div v-for="item in reasonCards" :key="item.title">
 						<strong>{{ item.title }}</strong>
 						<p>{{ item.desc }}</p>
 					</div>
 				</div>
+				<el-empty v-else description="点击“生成沟通建议”后，由后端携带检测证据调用大模型生成可能原因。" />
 			</section>
 
 			<section class="panel advice-panel">
 				<div class="section-title compact">
 					<h3>沟通建议</h3>
-					<p>MiniMax 会结合行为、持续时长和触发原因生成教师沟通话术。</p>
+					<p>{{ advicePanelHint }}</p>
+				</div>
+				<div class="ai-source-row">
+					<el-tag :type="sourceTagType" size="small">{{ sourceLabel }}</el-tag>
+					<span>{{ sourceDetail }}</span>
 				</div>
 				<div class="advice-card">
 					<el-icon><ChatDotRound /></el-icon>
-					<p>{{ selectedClue?.advice || '点击生成后，将给出开场话术、追问方向和后续跟进建议。' }}</p>
+					<p>{{ currentAdviceText }}</p>
 				</div>
-				<div class="guidance-grid">
-					<div>
-						<span>建议开场</span>
-						<strong>先关心身体状态和课堂压力</strong>
-					</div>
-					<div>
-						<span>避免说法</span>
-						<strong>避免当众点名或贴标签</strong>
-					</div>
-					<div>
-						<span>追问方向</span>
-						<strong>睡眠、课程难度、近期情绪</strong>
-					</div>
-					<div>
-						<span>人工跟进</span>
-						<strong>高风险或反复出现时建议复核</strong>
+				<div v-if="guidanceCards.length" class="guidance-grid">
+					<div v-for="item in guidanceCards" :key="item.title">
+						<span>{{ item.title }}</span>
+						<strong>{{ item.desc }}</strong>
 					</div>
 				</div>
 				<div class="action-row">
-					<el-button type="primary" :loading="loading" :disabled="!selectedClue" @click="generateAdvice">生成沟通建议</el-button>
-					<el-button :disabled="!selectedClue?.advice" @click="copyAdvice">复制建议</el-button>
-					<el-button :disabled="!selectedClue" @click="router.push('/interventionReport')">同步到跟进记录</el-button>
+					<el-button type="primary" :loading="loading" :disabled="!selectedClue" @click="generateAdvice">
+						{{ loading ? '生成中，约 5-15 秒' : '生成沟通建议' }}
+					</el-button>
+					<el-button :disabled="!aiResult || !selectedClue?.advice" @click="copyAdvice">复制建议</el-button>
+					<el-button :disabled="!aiResult || !selectedClue" @click="router.push('/detectionResult')">回到检测结果</el-button>
 				</div>
 				<div class="chat-box">
 					<div class="section-title compact">
@@ -116,8 +111,9 @@ import { ElMessage } from 'element-plus';
 import { ChatDotRound } from '@element-plus/icons-vue';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
 import DetectionSourceSelector from '/@/views/demo/components/DetectionSourceSelector.vue';
-import { applyAdvice, behaviorText, buildPrompt, currentFocusClue, demoState, fallbackAdvice, parseDurationSeconds, riskText, setCurrentEvent, sourceNameKey, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
+import { behaviorText, buildPrompt, clearDemoDetectionState, currentFocusClue, demoState, filterWarningRecordsByHistories, getAiDialogue, parseDurationSeconds, riskText, setAiDialogue, setCurrentEvent, sourceNameKey, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
 import { normalizeAdviceResult } from '/@/utils/advice';
+import type { AdviceCard, AdviceResult } from '/@/utils/advice';
 import request from '/@/utils/request';
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
@@ -131,19 +127,47 @@ const selectedSource = ref('');
 const warningRecords = ref<any[]>([]);
 const videoRecords = ref<any[]>([]);
 const chatMessages = ref<ChatMessage[]>([]);
+const reasonCards = ref<AdviceCard[]>([]);
+const guidanceCards = ref<AdviceCard[]>([]);
+const aiResult = ref<Pick<AdviceResult, 'source' | 'model' | 'fallback' | 'message'> | null>(null);
 
 const selectedClue = computed(() => currentFocusClue.value);
-const reasonCards = computed(() => [
-	{ title: '疲劳或身体不适', desc: `${selectedClue.value ? behaviorText(selectedClue.value.behaviorType) : '异常行为'}可能与睡眠、身体状态有关，需温和确认。` },
-	{ title: '课程压力或任务受阻', desc: '可询问是否听懂课程、实训任务是否遇到困难，避免直接批评。' },
-	{ title: '情绪低落或近期困扰', desc: '仅作为沟通方向，不做诊断；若反复出现再建议辅导员或心理老师介入。' },
-	{ title: '临时分心因素', desc: '结合课堂位置、任务进度和同类记录频次，判断是否需要持续观察。' },
-]);
+const sourceLabel = computed(() => {
+	if (!aiResult.value) return '待调用';
+	return aiResult.value.fallback ? '生成失败' : '真实大模型';
+});
+const sourceTagType = computed(() => {
+	if (!aiResult.value) return 'info';
+	return aiResult.value.fallback ? 'danger' : 'success';
+});
+const sourceDetail = computed(() => {
+	if (!aiResult.value) return '尚未请求后端 AI 接口。';
+	const modelText = aiResult.value.model ? `模型：${aiResult.value.model}` : '模型：后端配置';
+	return `${modelText}；来源：${aiResult.value.source}${aiResult.value.message ? `；${aiResult.value.message}` : ''}`;
+});
+const reasonPanelHint = computed(() => {
+	if (!aiResult.value) return '可能原因不会使用前端固定模板，生成时由后端携带检测证据请求大模型；所有原因仍需教师课后确认。';
+	return aiResult.value.fallback ? '大模型未成功返回，本页不会使用本地模板冒充 AI 研判。' : '以下可能原因由大模型基于检测证据生成，仅提供沟通方向，所有原因都需要教师课后确认。';
+});
+const advicePanelHint = computed(() => {
+	if (loading.value) return '正在等待后端大模型接口返回；系统不会使用本地模板冒充 AI 建议。';
+	if (!aiResult.value) return '点击生成后，前端会请求后端接口，由后端使用 API-Key 调用大模型生成话术。';
+	return aiResult.value.fallback ? '大模型未成功返回，请检查后端 API-Key、模型名称和接口地址后重试。' : '已通过后端 API-Key 调用大模型，并结合行为、持续时长和触发原因生成教师沟通话术。';
+});
+const currentAdviceText = computed(() => {
+	if (!aiResult.value) return '点击“生成沟通建议”后，本页才会展示本次后端大模型接口返回的开场话术、追问方向和后续跟进建议。';
+	if (aiResult.value.fallback) return aiResult.value.message || '大模型请求失败，未生成建议。';
+	return selectedClue.value?.advice || '大模型接口未返回有效建议，请检查后端 API-Key 与模型接口配置。';
+});
 
-watch(selectedClue, (clue) => {
+watch(() => selectedClue.value ? `${selectedClue.value.clueId}:${selectedClue.value.eventIds.join(',')}` : '', () => {
+	const clue = selectedClue.value;
 	selectedEventId.value = clue?.eventId || '';
-	chatMessages.value = [];
-}, { deep: true });
+	chatMessages.value = clue ? getAiDialogue(clue.eventId).slice() : [];
+	reasonCards.value = [];
+	guidanceCards.value = [];
+	aiResult.value = null;
+});
 
 function buildAdviceRequest(extra: Record<string, any> = {}) {
 	const clue = selectedClue.value;
@@ -171,19 +195,15 @@ function generateAdvice() {
 	if (!selectedClue.value) return;
 	loading.value = true;
 	request.post('/api/warningRecords/advice', buildAdviceRequest()).then((res) => {
-		const result = normalizeAdviceResult(res?.code == 0 ? res.data : null, fallbackAdvice(selectedClue.value!));
-		applyAdvice(result.advice, demoState.provider);
+		if (res?.code != 0) throw new Error(res?.msg || '大模型接口未返回成功状态');
+		const result = normalizeAdviceResult(res.data, '');
+		if (result.fallback || !result.advice) throw new Error(result.message || '大模型未返回有效建议');
+		applyGeneratedAdvice(result);
 		chatMessages.value = [{ role: 'assistant', content: result.advice }];
-		if (result.fallback) {
-			ElMessage.warning(result.message || 'MiniMax 暂未返回，已使用本地模板建议');
-		} else {
-			ElMessage.success(`MiniMax ${result.model || ''} 沟通建议已生成`.trim());
-		}
-	}).catch(() => {
-		const advice = fallbackAdvice(selectedClue.value!);
-		applyAdvice(advice, demoState.provider);
-		chatMessages.value = [{ role: 'assistant', content: advice }];
-		ElMessage.warning('AI接口暂不可用，已使用本地模板建议');
+		setAiDialogue(selectedClue.value!.eventId, chatMessages.value);
+		ElMessage.success(`${result.model || '大模型'} 沟通建议已生成`.trim());
+	}).catch((error) => {
+		markAdviceFailure(error, '大模型请求失败，未生成建议。');
 	}).finally(() => {
 		loading.value = false;
 	});
@@ -200,36 +220,48 @@ function askFollowUp() {
 		question,
 		messages: chatMessages.value.slice(0, -1),
 	})).then((res) => {
-		const result = normalizeAdviceResult(res?.code == 0 ? res.data : null, buildLocalFollowUpAnswer(clue, question));
+		if (res?.code != 0) throw new Error(res?.msg || '大模型接口未返回成功状态');
+		const result = normalizeAdviceResult(res.data, '');
+		if (result.fallback || !result.advice) throw new Error(result.message || '大模型未返回有效回复');
 		chatMessages.value.push({ role: 'assistant', content: result.advice });
-		if (result.fallback) ElMessage.warning(result.message || 'MiniMax 暂未返回，已使用本地模板回复');
-	}).catch(() => {
-		chatMessages.value.push({ role: 'assistant', content: buildLocalFollowUpAnswer(clue, question) });
-		ElMessage.warning('AI接口暂不可用，已使用本地模板回复');
+		setAiDialogue(clue.eventId, chatMessages.value);
+		aiResult.value = result;
+	}).catch((error) => {
+		markAdviceFailure(error, '大模型请求失败，未生成追问回复。');
 	}).finally(() => {
 		chatLoading.value = false;
 	});
 }
 
-function buildLocalFollowUpAnswer(clue: any, question: string) {
-	const q = question.toLowerCase();
-	const behavior = behaviorText(clue.behaviorType);
-	if (q.includes('否认') || q.includes('不承认')) {
-		return `如果学生否认${behavior}相关情况，建议不要争辩检测结果。可以说“我不是想批评你，只是看到你这节课状态有点不一样，想确认你是否需要帮助”。先让学生解释当时情况，再根据反馈决定是否继续观察。`;
+function applyGeneratedAdvice(result: AdviceResult) {
+	applyAdviceToSelectedClue(result.advice);
+	reasonCards.value = result.possibleReasons;
+	guidanceCards.value = result.guidanceCards;
+	aiResult.value = result;
+}
+
+function applyAdviceToSelectedClue(advice: string) {
+	const clue = selectedClue.value;
+	if (!clue) return;
+	const ids = new Set(clue.eventIds?.length ? clue.eventIds : [clue.eventId]);
+	const updated = demoState.events.filter((event) => ids.has(event.eventId));
+	updated.forEach((event) => {
+		event.advice = advice;
+		event.provider = demoState.provider;
+		event.promptPreview = buildPrompt(event);
+	});
+	const historyItem = updated.find((event) => event.eventId === clue.eventId) || updated[0];
+	if (historyItem) {
+		demoState.aiHistory = [{ ...historyItem }, ...demoState.aiHistory.filter((item) => !ids.has(item.eventId))].slice(0, 6);
 	}
-	if (q.includes('辅导员') || q.includes('班主任') || q.includes('心理')) {
-		return `是否联系辅导员要看频次和影响程度。若${behavior}只是一次短暂出现，先由任课老师课后关心确认；如果多次出现、持续时间较长，或伴随明显回避交流、情绪低落，再建议同步班主任、辅导员或心理老师共同跟进。`;
-	}
-	if (q.includes('家长')) {
-		return `不建议一开始就直接联系家长。可以先与学生本人做低压力沟通，了解是否有睡眠、身体或学习压力问题；只有在风险持续、学生需要支持或学校流程要求时，再由班主任或辅导员按规范联系家长。`;
-	}
-	if (q.includes('自尊') || q.includes('伤害') || q.includes('尴尬')) {
-		return `避免伤害学生自尊的关键是私下、具体、非评价。不要说“你有问题”或“你是不是心理不好”，可以说“我注意到你今天有一段时间${behavior}，担心你是不是太累了”。把重点放在支持和确认需求上。`;
-	}
-	if (q.includes('开口') || q.includes('怎么说') || q.includes('话术')) {
-		return `可以这样开口：“今天课堂中我注意到你有一段时间状态比较低，我想确认一下是不是身体不舒服、没休息好，或者课程任务有点吃力？如果需要，我们可以一起想办法。”语气保持关心，不把检测结果当作质问。`;
-	}
-	return `针对“${question}”，建议围绕${behavior}线索做非诊断式沟通：先描述观察到的课堂状态，再询问学生是否需要帮助，最后根据学生反馈决定是继续观察、提供学习支持，还是同步班主任/辅导员复核。`;
+}
+
+function markAdviceFailure(error: any, fallbackMessage: string) {
+	const message = error?.message || fallbackMessage;
+	reasonCards.value = [];
+	guidanceCards.value = [];
+	aiResult.value = { source: 'llm_error', fallback: true, message };
+	ElMessage.error(message);
 }
 
 function copyAdvice() {
@@ -245,9 +277,20 @@ async function loadWarningRecords() {
 			request.get('/api/videoRecords/all'),
 		]);
 		if (videoRes?.code == 0 && Array.isArray(videoRes.data)) videoRecords.value = videoRes.data;
+		if (!videoRecords.value.length) {
+			warningRecords.value = [];
+			selectedSource.value = '';
+			clearDemoDetectionState();
+			return;
+		}
 		if (warningRes?.code == 0 && Array.isArray(warningRes.data)) {
-			warningRecords.value = warningRes.data;
-			syncWarningRecords(warningRes.data);
+			const activeWarnings = filterWarningRecordsByHistories(warningRes.data, videoRecords.value);
+			warningRecords.value = activeWarnings;
+			if (!activeWarnings.length) {
+				clearDemoDetectionState();
+				return;
+			}
+			syncWarningRecords(activeWarnings);
 			selectedSource.value = sourceNameKey(demoState.material.sourceName);
 			if (topFocusClues.value.length && !selectedEventId.value) setCurrentEvent(topFocusClues.value[0].eventId);
 		}
@@ -378,12 +421,29 @@ onMounted(loadWarningRecords);
 	line-height: 1.8;
 }
 
+.advice-card p {
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow-wrap: anywhere;
+}
+
 .advice-card {
 	display: grid;
 	grid-template-columns: 34px minmax(0, 1fr);
 	gap: 12px;
 	background: #f1fbf8;
 	border-color: #cdebe4;
+	align-items: start;
+}
+
+.ai-source-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 12px;
+	color: #5f7075;
+	font-size: 13px;
+	line-height: 1.5;
 }
 
 .advice-card .el-icon {
@@ -425,6 +485,9 @@ onMounted(loadWarningRecords);
 	background: #f7fbfa;
 	color: #34464a;
 	border: 1px solid #e0e9e7;
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow-wrap: anywhere;
 }
 
 .chat-message.user {

@@ -1,4 +1,5 @@
 import { computed, reactive } from 'vue';
+import { normalizeAdviceText } from '/@/utils/advice';
 
 export type RiskLevel = 'normal' | 'low' | 'medium' | 'high';
 export type SourceType = 'video' | 'image';
@@ -40,6 +41,11 @@ export interface DemoStat {
 	confidence: string;
 	tone: string;
 	value: number;
+}
+
+export interface AiDialogueMessage {
+	role: 'user' | 'assistant';
+	content: string;
 }
 
 const defaultAdvice = '建议课后以关心身体状态为切入点进行简短沟通，避免当众批评或贴标签。可询问近期睡眠、课程压力和实训任务完成情况；如多次出现类似行为，建议同步辅导员或心理老师做后续跟进。';
@@ -129,6 +135,7 @@ export const demoState = reactive({
 		{ key: 'pending', label: '等待算法结果', duration: '0秒', ratio: '0.0%', count: 0, confidence: '-', tone: 'green', value: 0 },
 	] as DemoStat[],
 	aiHistory: [] as DemoEvent[],
+	aiDialogues: {} as Record<string, AiDialogueMessage[]>,
 	settings: {
 		lieDeskThreshold: 10,
 		headDownThreshold: 15,
@@ -239,13 +246,12 @@ export function upsertEvent(input: Partial<DemoEvent>) {
 		confidence: input.confidence || '78.5%',
 		reason: input.reason || '检测到课堂行为事件，建议结合课程场景进行研判。',
 		promptPreview: input.promptPreview || '',
-		advice: input.advice || '',
+		advice: normalizeAdviceText(input.advice || ''),
 		status: input.status || '待跟进',
 		createdAt: input.createdAt || formatDateTime(new Date()),
 		provider: input.provider || demoState.provider,
 	};
 	event.promptPreview = event.promptPreview || buildPrompt(event);
-	event.advice = event.advice || fallbackAdvice(event);
 	if (existing) {
 		Object.assign(existing, event);
 	} else {
@@ -257,11 +263,22 @@ export function upsertEvent(input: Partial<DemoEvent>) {
 
 export function applyAdvice(advice: string, provider: Provider = demoState.provider) {
 	if (!currentEvent.value) return;
-	currentEvent.value.advice = advice;
+	currentEvent.value.advice = normalizeAdviceText(advice, fallbackAdvice(currentEvent.value));
 	currentEvent.value.provider = provider;
 	currentEvent.value.promptPreview = buildPrompt(currentEvent.value);
 	const historyItem = { ...currentEvent.value };
 	demoState.aiHistory = [historyItem, ...demoState.aiHistory.filter((item) => item.eventId !== historyItem.eventId)].slice(0, 6);
+}
+
+export function setAiDialogue(eventId: string, messages: AiDialogueMessage[]) {
+	if (!eventId) return;
+	demoState.aiDialogues[eventId] = messages
+		.filter((item) => item?.content)
+		.map((item) => ({ role: item.role, content: item.content }));
+}
+
+export function getAiDialogue(eventId: string) {
+	return eventId ? (demoState.aiDialogues[eventId] || []) : [];
 }
 
 export function updateStatsFromLabels(labels: string[]) {
@@ -334,6 +351,9 @@ export function syncWarningRecords(records: any[], sourceName = '') {
 	const selectedIds = new Set(eventRecords.map((record) => warningRecordEventId(record)));
 	demoState.events.splice(0, demoState.events.length, ...demoState.events.filter((event) => selectedIds.has(event.eventId)));
 	demoState.aiHistory = demoState.aiHistory.filter((event) => selectedIds.has(event.eventId));
+	Object.keys(demoState.aiDialogues).forEach((eventId) => {
+		if (!selectedIds.has(eventId)) delete demoState.aiDialogues[eventId];
+	});
 	const syncedStats = warningRecordsToStats(statsRecords);
 	if (syncedStats.length) demoState.stats.splice(0, demoState.stats.length, ...syncedStats);
 	eventRecords.forEach((record) => {
@@ -351,12 +371,26 @@ export function syncWarningRecords(records: any[], sourceName = '') {
 			durationText,
 			confidence: formatConfidence(record.confidence),
 			reason: record.reason || '\u540e\u7aef\u68c0\u6d4b\u4e8b\u4ef6\u8bb0\u5f55',
-			advice: record.advice || fallbackAdvice({ behaviorType, riskLevel, durationText }),
+			advice: record.advice || '',
 			status: record.status || '\u5f85\u8ddf\u8fdb',
 			createdAt: record.triggerTime || record.createdAt || '',
 			provider: record.provider || demoState.provider,
 		});
 	});
+}
+
+export function clearDemoDetectionState(sourceName = '') {
+	resetStatsForSource(sourceName || demoState.material.sourceName);
+}
+
+export function filterWarningRecordsByHistories(records: any[], histories: any[]) {
+	if (!Array.isArray(records)) return [];
+	if (!Array.isArray(histories) || !histories.length) return [];
+	const historyKeys = histories
+		.map((record) => sourceNameKey(record?.inputVideo || record?.videoSource || record?.sourceName || record?.fileName || ''))
+		.filter(Boolean);
+	if (!historyKeys.length) return [];
+	return records.filter((record) => historyKeys.some((key) => recordMatchesSource(record, key)));
 }
 
 export function clearSampleEvents() {
@@ -483,7 +517,7 @@ function protocolWarningToDemoEvent(warning: any, payload: any): Partial<DemoEve
 		durationText: warning.durationText || formatMinuteSecond(durationSeconds),
 		confidence: confidence ? `${Math.round(confidence * 100)}%` : '-',
 		reason: warning.reason || payload.warningState?.reason || '检测事件达到触发阈值',
-		advice: warning.advice || '',
+		advice: normalizeAdviceText(warning.advice || ''),
 		status: warning.status || '待跟进',
 		createdAt: warning.triggerTime || payload.timestamp || '',
 		provider: warning.provider || demoState.provider,
@@ -545,6 +579,7 @@ function resetStatsForSource(sourceName: string) {
 	});
 	demoState.events.splice(0, demoState.events.length);
 	demoState.aiHistory = [];
+	demoState.aiDialogues = {};
 	demoState.selectedEventId = '';
 }
 
@@ -604,12 +639,17 @@ export function formatMinuteSecond(seconds: number) {
 export function exportReportText() {
 	const event = currentFocusClue.value || currentEvent.value;
 	if (!event) return '请先完成视频检测，再生成教师跟进记录。';
+	const dialogue = getAiDialogue(event.eventId);
+	const dialogueText = dialogue.length
+		? `AI追问记录：\n${dialogue.map((item) => `${item.role === 'user' ? '教师追问' : 'AI回复'}：${item.content}`).join('\n')}`
+		: 'AI追问记录：暂无连续追问记录。';
 	return [
 		'课堂异常行为检测与教师跟进记录',
 		`检测摘要：系统在本次录制课堂视频中筛选出重点异常线索：${behaviorText(event.behaviorType)}。`,
 		`重点事件：${event.eventId}，风险等级：${riskText(event.riskLevel)}，持续时长：${event.durationText}。`,
 		`风险说明：${event.reason}`,
-		`教师沟通建议：${event.advice || fallbackAdvice(event)}`,
+		`教师沟通建议：${event.advice || '尚未生成，请先在 AI 辅助干预页面通过后端大模型接口生成沟通建议。'}`,
+		dialogueText,
 		'后续跟进：建议教师先进行非公开、低压力沟通，记录学生反馈和后续课堂状态。',
 		'边界说明：本记录仅作为教师观察与沟通辅助，不作为医学或心理诊断结论。',
 	].join('\n');

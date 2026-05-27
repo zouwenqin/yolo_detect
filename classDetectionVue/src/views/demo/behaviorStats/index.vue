@@ -149,7 +149,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import * as echarts from 'echarts';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
-import { behaviorText, demoState, displaySourceName, normalizeBehavior, parseDurationSeconds, riskText, sourceNameKey, syncWarningRecords } from '/@/views/demo/demoState';
+import { behaviorText, clearDemoDetectionState, demoState, displaySourceName, filterWarningRecordsByHistories, normalizeBehavior, parseDurationSeconds, riskText, sourceNameKey, syncWarningRecords } from '/@/views/demo/demoState';
 import request from '/@/utils/request';
 
 type HistoryOption = {
@@ -240,8 +240,11 @@ const sourceOptions = computed<HistoryOption[]>(() => {
 			resultVideoUrl: row.resultVideoUrl || '',
 		});
 	};
+	if (!videoRecords.value.length && !demoState.hasLiveData && !hasCurrentLiveStats(demoState.material.sourceName)) {
+		return [];
+	}
 	const savedState = readVideoPageState();
-	if (savedState?.sourceName) {
+	if (savedState?.sourceName && (videoRecords.value.length || demoState.hasLiveData)) {
 		addOption(savedState.sourceName, {
 			startTime: '最近检测',
 			preprocessedDataset: savedState.preprocessedDataset,
@@ -251,7 +254,9 @@ const sourceOptions = computed<HistoryOption[]>(() => {
 		}, true);
 	}
 	uniqueLatestRecords(videoRecords.value).forEach((row) => addOption(row.inputVideo || row.sourceName || row.fileName, row));
-	addOption(demoState.material.sourceName, { startTime: '当前检测' }, true);
+	if (demoState.hasLiveData || hasCurrentLiveStats(demoState.material.sourceName)) {
+		addOption(demoState.material.sourceName, { startTime: '当前检测' }, true);
+	}
 	return Array.from(options.values());
 });
 
@@ -996,6 +1001,21 @@ async function loadPageData() {
 		]);
 		warningRecords.value = warningRes?.code == 0 && Array.isArray(warningRes.data) ? warningRes.data : [];
 		videoRecords.value = videoRes?.code == 0 && Array.isArray(videoRes.data) ? videoRes.data : [];
+		if (!videoRecords.value.length) {
+			warningRecords.value = [];
+			currentPredictionWindows.value = [];
+			currentBehaviorHeatmap.value = [];
+			currentSpatialVideoUrl.value = '';
+			selectedSource.value = '';
+			sessionStorage.removeItem(videoPageStorageKey);
+			clearDemoDetectionState();
+			refreshCharts();
+			return;
+		}
+		warningRecords.value = filterWarningRecordsByHistories(warningRecords.value, videoRecords.value);
+		if (!warningRecords.value.length) {
+			clearDemoDetectionState();
+		}
 		const routeSource = typeof route.query.source === 'string' ? route.query.source : '';
 		const routeKey = routeSource ? sourceNameKey(routeSource) : '';
 		const matched = sourceOptions.value.find((item) => item.value === routeSource || item.sourceKey === routeKey);

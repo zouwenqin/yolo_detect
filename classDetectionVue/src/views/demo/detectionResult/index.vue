@@ -86,18 +86,13 @@
 			<aside class="panel evidence-panel">
 				<template v-if="selectedClue">
 					<div class="section-title compact">
-						<h3>行为证据卡片</h3>
+						<h3>重点线索与跟进</h3>
 						<p>{{ selectedClue.timeRange }}</p>
-					</div>
-					<div class="evidence-visual">
-						<div class="board"></div>
-						<div v-for="item in 7" :key="item" class="head" :class="`h${item}`"></div>
-						<div class="outline">{{ behaviorText(selectedClue.behaviorType) }}</div>
 					</div>
 					<div class="evidence-summary">
 						<el-tag :type="riskTagType(selectedClue.riskLevel)" size="large">风险{{ riskText(selectedClue.riskLevel) }}</el-tag>
 						<h2>{{ behaviorText(selectedClue.behaviorType) }} · {{ selectedClue.durationText }}</h2>
-						<p>{{ selectedClue.reason }}</p>
+						<p>{{ selectedClue.evidenceText }}</p>
 					</div>
 					<div class="info-grid">
 						<div><span>同类记录</span><strong>{{ selectedClue.eventCount }} 条</strong></div>
@@ -105,18 +100,37 @@
 						<div><span>处理状态</span><strong>{{ selectedClue.status }}</strong></div>
 						<div><span>数据来源</span><strong>算法检测 + 后端预警</strong></div>
 					</div>
+					<section class="evidence-proof">
+						<h3>检测依据</h3>
+						<p>{{ selectedClue.reason }}</p>
+						<p>当前预警记录保留的是结构化线索：行为类型、持续时长、风险原因和同类记录数量，避免把模拟画面当作真实证据。</p>
+					</section>
 					<section class="teacher-note">
-						<h3>教师关注提示</h3>
-						<p>{{ selectedClue.teacherHint }}</p>
-						<p>该提示不是心理诊断，只用于提醒教师课后进行温和、私下的沟通确认。</p>
+						<h3>AI 沟通建议</h3>
+						<p>{{ selectedClue.advice || '尚未生成 AI 沟通建议，可先进入 AI 辅助干预页面生成，再导出教师跟进记录。' }}</p>
+						<div v-if="aiDialogue.length" class="dialogue-summary">
+							<strong>追问记录</strong>
+							<p v-for="(message, index) in aiDialogue.slice(-2)" :key="index">
+								{{ message.role === 'user' ? '教师追问' : 'AI回复' }}：{{ message.content }}
+							</p>
+						</div>
+					</section>
+					<section class="report-card">
+						<h3>教师跟进记录</h3>
+						<ul>
+							<li>课后单独、温和询问学生近期身体状态、睡眠和课程压力。</li>
+							<li>不要在课堂公开点名，也不要把检测结果作为心理诊断。</li>
+							<li>若同类线索反复出现，再同步班主任、辅导员或心理老师人工复核。</li>
+						</ul>
 					</section>
 					<div class="action-row">
-						<el-button type="primary" @click="router.push('/aiIntervention')">进入 AI 沟通助手</el-button>
-						<el-button @click="router.push('/interventionReport')">生成跟进记录</el-button>
+						<el-button type="primary" @click="router.push('/aiIntervention')">生成 AI 建议</el-button>
+						<el-button :disabled="!selectedClue" @click="downloadReport('txt')">导出记录</el-button>
+						<el-button :disabled="!selectedClue" @click="downloadReport('doc')">Word 兼容</el-button>
 					</div>
 				</template>
 				<div v-else class="empty-detail">
-					<el-empty description="完成视频检测后将展示行为证据卡片" />
+					<el-empty description="完成视频检测后将展示重点线索和跟进建议" />
 				</div>
 			</aside>
 		</div>
@@ -129,7 +143,7 @@ import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import DemoShell from '/@/views/demo/components/DemoShell.vue';
 import DetectionSourceSelector from '/@/views/demo/components/DetectionSourceSelector.vue';
-import { behaviorText, currentFocusClue, demoState, focusClues, realEvents, riskTagType, riskText, setCurrentEvent, sourceNameKey, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
+import { behaviorText, clearDemoDetectionState, currentFocusClue, demoState, exportReportText, filterWarningRecordsByHistories, focusClues, getAiDialogue, realEvents, riskTagType, riskText, setCurrentEvent, sourceNameKey, syncWarningRecords, topFocusClues } from '/@/views/demo/demoState';
 import request from '/@/utils/request';
 
 const router = useRouter();
@@ -145,6 +159,7 @@ const selectedClue = computed(() => currentFocusClue.value);
 const primaryClue = computed(() => topFocusClues.value[0]);
 const maxRisk = computed(() => primaryClue.value?.riskLevel || 'normal');
 const pageStatus = computed(() => loading.value ? '同步检测结果' : (clueCount.value ? '已生成线索' : '等待检测结果'));
+const aiDialogue = computed(() => selectedClue.value ? getAiDialogue(selectedClue.value.eventId) : []);
 
 function handleClueClick(eventId: string) {
 	setCurrentEvent(eventId);
@@ -157,6 +172,15 @@ function handleSourceChange(option: any) {
 	if (topFocusClues.value.length) setCurrentEvent(topFocusClues.value[0].eventId);
 }
 
+function downloadReport(type: 'txt' | 'doc') {
+	const blob = new Blob([exportReportText()], { type: 'text/plain;charset=utf-8' });
+	const link = document.createElement('a');
+	link.href = URL.createObjectURL(blob);
+	link.download = `${selectedClue.value?.eventId || '课堂异常'}-教师跟进记录.${type}`;
+	link.click();
+	URL.revokeObjectURL(link.href);
+}
+
 async function loadWarningRecords() {
 	loading.value = true;
 	loadError.value = '';
@@ -166,9 +190,20 @@ async function loadWarningRecords() {
 			request.get('/api/videoRecords/all'),
 		]);
 		if (videoRes?.code == 0 && Array.isArray(videoRes.data)) videoRecords.value = videoRes.data;
+		if (!videoRecords.value.length) {
+			warningRecords.value = [];
+			selectedSource.value = '';
+			clearDemoDetectionState();
+			return;
+		}
 		if (warningRes?.code == 0 && Array.isArray(warningRes.data)) {
-			warningRecords.value = warningRes.data;
-			syncWarningRecords(warningRes.data);
+			const activeWarnings = filterWarningRecordsByHistories(warningRes.data, videoRecords.value);
+			warningRecords.value = activeWarnings;
+			if (!activeWarnings.length) {
+				clearDemoDetectionState();
+				return;
+			}
+			syncWarningRecords(activeWarnings);
 			selectedSource.value = sourceNameKey(demoState.material.sourceName);
 			if (topFocusClues.value.length && !topFocusClues.value.some((item) => item.eventIds.includes(demoState.selectedEventId))) {
 				setCurrentEvent(topFocusClues.value[0].eventId);
@@ -312,6 +347,9 @@ onMounted(loadWarningRecords);
 
 .clue-card p,
 .teacher-note p,
+.evidence-proof p,
+.report-card li,
+.dialogue-summary p,
 .evidence-summary p {
 	color: #53666b;
 	line-height: 1.75;
@@ -330,57 +368,8 @@ onMounted(loadWarningRecords);
 	margin-bottom: 12px;
 }
 
-.evidence-visual {
-	position: relative;
-	height: 210px;
-	border-radius: 8px 8px 0 0;
-	background:
-		linear-gradient(#e6edea 0 32%, transparent 32%),
-		linear-gradient(#805d45 0 0);
-	overflow: hidden;
-}
-
-.board {
-	position: absolute;
-	left: 31%;
-	top: 9%;
-	width: 38%;
-	height: 22%;
-	border: 7px solid #304a48;
-	background: #edf3f0;
-}
-
-.head {
-	position: absolute;
-	width: 58px;
-	height: 48px;
-	border-radius: 32px 32px 8px 8px;
-	background: #243a3d;
-	box-shadow: 0 28px 0 #c99d71;
-}
-
-.h1 { left: 10%; top: 42%; transform: scale(.75); }
-.h2 { left: 27%; top: 39%; transform: scale(.82); }
-.h3 { left: 45%; top: 49%; transform: scale(1.22); }
-.h4 { left: 65%; top: 41%; transform: scale(.86); }
-.h5 { left: 80%; top: 44%; transform: scale(.76); }
-.h6 { left: 20%; top: 66%; transform: scale(1); }
-.h7 { left: 57%; top: 67%; transform: scale(.98); }
-
-.outline {
-	position: absolute;
-	left: 42%;
-	top: 39%;
-	padding: 7px 12px;
-	border: 2px solid #ef4f45;
-	border-radius: 6px;
-	color: #ef4f45;
-	background: rgba(255, 255, 255, .72);
-	font-weight: 800;
-}
-
 .evidence-summary {
-	padding: 16px 0 8px;
+	padding: 4px 0 8px;
 }
 
 .evidence-summary h2 {
@@ -395,16 +384,46 @@ onMounted(loadWarningRecords);
 	margin: 12px 0;
 }
 
-.teacher-note {
+.teacher-note,
+.evidence-proof,
+.report-card {
 	padding: 14px;
 	border-radius: 8px;
 	background: #f1fbf8;
 	border: 1px solid #cdebe4;
+	margin-top: 12px;
 }
 
-.teacher-note h3 {
+.evidence-proof {
+	background: #fbfdfc;
+	border-color: #e2ece9;
+}
+
+.report-card {
+	background: #fffaf0;
+	border-color: #f0dfb8;
+}
+
+.teacher-note h3,
+.evidence-proof h3,
+.report-card h3 {
 	margin: 0;
 	font-size: 16px;
+}
+
+.report-card ul {
+	margin: 8px 0 0;
+	padding-left: 18px;
+}
+
+.dialogue-summary {
+	margin-top: 12px;
+	padding-top: 12px;
+	border-top: 1px solid #cdebe4;
+}
+
+.dialogue-summary strong {
+	color: #173337;
 }
 
 .empty-detail {
@@ -415,6 +434,7 @@ onMounted(loadWarningRecords);
 
 .action-row {
 	margin-top: 16px;
+	flex-wrap: wrap;
 }
 
 @media (max-width: 1040px) {

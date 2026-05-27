@@ -7,6 +7,7 @@ import com.example.Kcsj.mapper.ImgRecordsMapper;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 
@@ -20,6 +21,9 @@ public class PredictionController {
     ImgRecordsMapper imgRecordsMapper;
 
     private final RestTemplate restTemplate = new RestTemplate();
+
+    @Value("${flask.api-base-url:http://localhost:5000}")
+    private String flaskApiBaseUrl;
 
     // 定义接收的参数类
     public static class PredictRequest {
@@ -94,7 +98,7 @@ public class PredictionController {
             HttpEntity<PredictRequest> requestEntity = new HttpEntity<>(request, headers);
 
             // 调用 Flask API
-            String response = restTemplate.postForObject("http://localhost:5000/predictImg", requestEntity, String.class);
+            String response = restTemplate.postForObject(flaskApiBaseUrl + "/predictImg", requestEntity, String.class);
             System.out.println("Received response: " + response);
             JSONObject responses = JSONObject.parseObject(response);
             if(responses.get("status").equals(400)){
@@ -123,7 +127,7 @@ public class PredictionController {
     public Result<?> getFileNames() {
         try {
             // 调用 Flask API
-            String response = restTemplate.getForObject("http://127.0.0.1:5000/file_names", String.class);
+            String response = restTemplate.getForObject(flaskApiBaseUrl + "/file_names", String.class);
             return Result.success(response);
         } catch (Exception e) {
             return Result.error("-1", "Error: " + e.getMessage());

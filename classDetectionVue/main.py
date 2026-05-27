@@ -17,6 +17,7 @@ class VideoProcessingApp:
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")  # 初始化 SocketIO
         self.host = host
         self.port = port
+        self.backend_base_url = os.environ.get("BACKEND_BASE_URL", "http://localhost:9999").rstrip("/")
         self.setup_routes()
         self.data = {}  # 存储接收参数
         self.paths = {
@@ -141,7 +142,7 @@ class VideoProcessingApp:
                     self.socketio.emit('progress', {'data': progress})
                 uploadedUrl = self.upload(self.paths['output'])
                 self.data["outVideo"] = uploadedUrl
-                self.save_data(json.dumps(self.data), 'http://localhost:9999/videoRecords')
+                self.save_data(json.dumps(self.data), f'{self.backend_base_url}/videoRecords')
                 self.cleanup_files([self.paths['download'], self.paths['output'], self.paths['video_output']])
 
         return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -192,7 +193,7 @@ class VideoProcessingApp:
                 uploadedUrl = self.upload(self.paths['output'])
                 self.data["outVideo"] = uploadedUrl
                 print(self.data)
-                self.save_data(json.dumps(self.data), 'http://localhost:9999/cameraRecords')
+                self.save_data(json.dumps(self.data), f'{self.backend_base_url}/cameraRecords')
                 self.cleanup_files([self.paths['download'], self.paths['output'], self.paths['camera_output']])
 
         return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -256,7 +257,7 @@ class VideoProcessingApp:
 
     def upload(self, out_path):
         """上传处理后的图片或视频文件到远程服务器"""
-        upload_url = "http://localhost:9999/files/upload"
+        upload_url = f"{self.backend_base_url}/files/upload"
         try:
             with open(out_path, 'rb') as file:
                 files = {'file': (os.path.basename(out_path), file)}

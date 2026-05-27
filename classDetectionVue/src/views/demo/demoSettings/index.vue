@@ -61,7 +61,7 @@
 			<section class="panel">
 				<div class="section-title">
 					<h3>AI 服务状态</h3>
-					<p>AI 辅助干预统一使用后端配置的 MiniMax，不在前端暴露 API-Key。</p>
+					<p>AI 辅助干预统一使用后端配置的大模型接口，不在前端暴露 API-Key。</p>
 				</div>
 				<div class="form-grid">
 					<label>
@@ -75,7 +75,7 @@
 					<label>
 						<span>AI 辅助模型</span>
 						<div class="provider-card">
-							<strong>MiniMax · {{ aiService.model || '后端配置模型' }}</strong>
+							<strong>后端大模型 · {{ aiService.model || '后端配置模型' }}</strong>
 							<em>{{ aiService.configured ? 'API-Key 已在后端配置，生成建议时会返回真实/兜底来源' : '未检测到后端 API-Key，将使用本地兜底建议' }}</em>
 							<el-tag :type="aiService.configured ? 'success' : 'warning'" size="small">
 								{{ aiService.configured ? 'Key 已配置' : '本地兜底可用' }}

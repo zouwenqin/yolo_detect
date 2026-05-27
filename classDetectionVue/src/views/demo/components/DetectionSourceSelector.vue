@@ -2,11 +2,8 @@
 	<section class="panel source-panel">
 		<div class="source-title">
 			<div>
-				<h3>检测结果切换</h3>
+				<h3>检测素材</h3>
 				<p>当前查看：{{ selectedLabel }}</p>
-			</div>
-			<div class="source-actions">
-				<el-button @click="router.push('/detectionHistory')">检测历史</el-button>
 			</div>
 		</div>
 		<div class="history-strip">
@@ -28,7 +25,6 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { demoState, displaySourceName, sourceNameKey } from '/@/views/demo/demoState';
 
 type DetectionSourceOption = {
@@ -53,8 +49,6 @@ const emit = defineEmits<{
 	(e: 'update:modelValue', value: string): void;
 	(e: 'change', option: DetectionSourceOption): void;
 }>();
-
-const router = useRouter();
 
 const selectedValue = computed({
 	get: () => props.modelValue,
@@ -190,12 +184,6 @@ function recordTime(record: any) {
 	font-size: 13px;
 }
 
-.source-actions {
-	display: flex;
-	align-items: center;
-	justify-content: flex-end;
-}
-
 .history-strip {
 	display: flex;
 	gap: 8px;
@@ -250,10 +238,6 @@ function recordTime(record: any) {
 	.source-title {
 		grid-template-columns: 1fr;
 		display: grid;
-	}
-
-	.source-actions {
-		justify-content: flex-start;
 	}
 }
 </style>
